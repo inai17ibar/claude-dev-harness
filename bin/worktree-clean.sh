@@ -9,7 +9,19 @@
 #   このため既定では自分のリポジトリ名で始まるディレクトリしか触らない。
 set -uo pipefail
 
-HARNESS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# シンボリックリンク (/usr/local/bin/*) 経由で呼ばれても実体の位置を求める。
+# BASH_SOURCE はリンクのパスのままなので、そのまま dirname するとライブラリを見失う。
+# macOS の readlink には -f が無いので自前でたどる。
+_harness_self="${BASH_SOURCE[0]}"
+while [ -L "$_harness_self" ]; do
+  _harness_dir=$(cd -P "$(dirname "$_harness_self")" && pwd)
+  _harness_self=$(readlink "$_harness_self")
+  case "$_harness_self" in
+    /*) ;;
+    *) _harness_self="$_harness_dir/$_harness_self" ;;
+  esac
+done
+HARNESS_ROOT=$(cd -P "$(dirname "$_harness_self")/.." && pwd)
 # shellcheck source=../lib/common.sh
 . "$HARNESS_ROOT/lib/common.sh"
 

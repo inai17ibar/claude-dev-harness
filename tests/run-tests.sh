@@ -130,6 +130,27 @@ if should_run "common"; then
   ok "harness_default_branch が Git 外でも落ちない (=${got:-空})"
 fi
 
+# ---- symlink 経由の呼び出し ---------------------------------------------
+group "symlink 経由で呼んでも lib を見つけられる"
+if should_run "symlink"; then
+  linkdir=$(mktemp -d)
+  for name in spawn-agents ccx-run worktree-clean harness-collect-metrics harness-dashboard; do
+    ln -sf "$ROOT/bin/${name}.sh" "$linkdir/$name"
+  done
+  for name in spawn-agents ccx-run worktree-clean; do
+    if out=$("$linkdir/$name" --help 2>&1) && printf '%s' "$out" | grep -q "使い方"; then
+      ok "$name --help (symlink)"
+    else
+      ng "$name --help (symlink): $(printf '%s' "$out" | head -1)"
+    fi
+  done
+  # フックも symlink 経由で動くこと
+  ln -sf "$ROOT/hooks/safety-guard.sh" "$linkdir/safety-guard"
+  echo '{"tool_input":{"command":"rm -rf /"}}' | "$linkdir/safety-guard" >/dev/null 2>&1
+  assert_eq "2" "$?" "safety-guard (symlink) がブロックする"
+  rm -rf "$linkdir"
+fi
+
 # ---- 構文チェック --------------------------------------------------------
 group "全スクリプトの構文チェック"
 while IFS= read -r f; do
@@ -139,6 +160,34 @@ done < <(find "$ROOT/bin" "$ROOT/hooks" "$ROOT/lib" "$ROOT/tests" -type f -name 
 
 if should_run "syntax: setup.sh"; then
   if bash -n "$ROOT/setup.sh" 2>/dev/null; then ok "bash -n setup.sh"; else ng "bash -n setup.sh"; fi
+fi
+
+# ---- 日本語まわりの落とし穴 ---------------------------------------------
+group "\$VAR の直後に多バイト文字が来ていないか"
+# bash はヒアドキュメント内の `$AGENT_TIMEOUT、` を変数名の一部として読もうとし、
+# set -u と組み合わさると unbound variable で落ちる。bash -n では検出できない。
+if should_run "multibyte"; then
+  # grep -P は BSD grep に無いので python3 で見る (macOS ランナーで空振りさせない)
+  hits=$(python3 - "$ROOT" << 'PY'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+pat = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]")
+for d in ("bin", "hooks", "lib"):
+    for f in sorted((root / d).glob("*.sh")):
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if pat.search(line):
+                print(f"{f.relative_to(root)}:{i}: {line.strip()}")
+f = root / "setup.sh"
+for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+    if pat.search(line):
+        print(f"setup.sh:{i}: {line.strip()}")
+PY
+)
+  if [ -z "$hits" ]; then
+    ok "すべて \${VAR} で囲まれている"
+  else
+    ng "波括弧なしの変数展開が多バイト文字に接している:"$'\n'"$hits"
+  fi
 fi
 
 # ---- 結果 ----------------------------------------------------------------

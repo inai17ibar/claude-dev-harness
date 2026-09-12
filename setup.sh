@@ -7,7 +7,19 @@
 #   - hooks と CLI はこのリポジトリを直接指す。git pull すればそのまま反映される
 set -uo pipefail
 
-HARNESS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# シンボリックリンク (/usr/local/bin/*) 経由で呼ばれても実体の位置を求める。
+# BASH_SOURCE はリンクのパスのままなので、そのまま dirname するとライブラリを見失う。
+# macOS の readlink には -f が無いので自前でたどる。
+_harness_self="${BASH_SOURCE[0]}"
+while [ -L "$_harness_self" ]; do
+  _harness_dir=$(cd -P "$(dirname "$_harness_self")" && pwd)
+  _harness_self=$(readlink "$_harness_self")
+  case "$_harness_self" in
+    /*) ;;
+    *) _harness_self="$_harness_dir/$_harness_self" ;;
+  esac
+done
+HARNESS_ROOT=$(cd -P "$(dirname "$_harness_self")" && pwd)
 # shellcheck source=lib/common.sh
 . "$HARNESS_ROOT/lib/common.sh"
 
@@ -214,7 +226,9 @@ $MARKER_BEGIN
 export CLAUDE_HARNESS_DIR="\$HOME/.claude-harness"   # ログ・状態の置き場
 export WORKTREES_BASE="\$HOME/worktrees"             # worktree の置き場
 export CLAUDE_MODEL="claude-opus-5"                  # spawn-agents / ccx-run の既定モデル
-export MAX_PARALLEL=3                                # 並行数の上限
+# 並行数の上限。エージェントが同時起動で落ちるようなら 1〜2 に下げる。
+export MAX_PARALLEL=3
+export AGENT_TIMEOUT=3600                            # 1エージェントの上限秒数 (0で無制限)
 # Slack 通知を使うなら実際の Webhook URL を入れてコメントを外す。
 # 未設定なら on-stop.sh は Slack への送信をスキップします。
 # export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."

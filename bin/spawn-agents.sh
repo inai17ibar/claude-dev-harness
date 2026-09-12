@@ -3,7 +3,19 @@
 # 使い方: spawn-agents [オプション] <issue#> [issue#] ...
 set -uo pipefail
 
-HARNESS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# シンボリックリンク (/usr/local/bin/*) 経由で呼ばれても実体の位置を求める。
+# BASH_SOURCE はリンクのパスのままなので、そのまま dirname するとライブラリを見失う。
+# macOS の readlink には -f が無いので自前でたどる。
+_harness_self="${BASH_SOURCE[0]}"
+while [ -L "$_harness_self" ]; do
+  _harness_dir=$(cd -P "$(dirname "$_harness_self")" && pwd)
+  _harness_self=$(readlink "$_harness_self")
+  case "$_harness_self" in
+    /*) ;;
+    *) _harness_self="$_harness_dir/$_harness_self" ;;
+  esac
+done
+HARNESS_ROOT=$(cd -P "$(dirname "$_harness_self")/.." && pwd)
 # shellcheck source=../lib/common.sh
 . "$HARNESS_ROOT/lib/common.sh"
 
@@ -16,13 +28,13 @@ usage() {
 
 オプション:
   -m, --mode MODE      parallel(既定) | tmux | sequential
-  -j, --jobs N         並行数の上限 (既定: $MAX_PARALLEL)
+  -j, --jobs N         並行数の上限 (既定: ${MAX_PARALLEL})
   -p, --pr             完了後に PR を作成する
       --merge          --pr に加えて自動マージまで行う
       --admin          ブランチ保護を bypass して強制マージ (--merge と併用)
-      --model MODEL    モデル (既定: $CLAUDE_MODEL)
+      --model MODEL    モデル (既定: ${CLAUDE_MODEL})
   -b, --base BRANCH    ベースブランチ (既定: リポジトリの既定ブランチ)
-  -t, --timeout SEC    1エージェントの上限秒数 (既定: $AGENT_TIMEOUT、0で無制限)
+  -t, --timeout SEC    1エージェントの上限秒数 (既定: ${AGENT_TIMEOUT}、0で無制限)
   -f, --force          未マージ PR がある Issue も再実装する
   -d, --dry-run        実行計画だけ表示する
   -h, --help           このヘルプ
@@ -83,8 +95,8 @@ REPO_SLUG=$(harness_repo_slug)
 [ -n "$BASE_BRANCH" ] || BASE_BRANCH=$(harness_default_branch)
 mkdir -p "$LOG_DIR" "$WORKTREES_BASE"
 
-harness_log "リポジトリ: $REPO_SLUG  ベース: $BASE_BRANCH  モデル: $CLAUDE_MODEL"
-harness_log "並行上限: $MAX_PARALLEL  タイムアウト: ${AGENT_TIMEOUT}s"
+harness_log "リポジトリ: $REPO_SLUG  ベース: $BASE_BRANCH  モデル: ${CLAUDE_MODEL}"
+harness_log "並行上限: ${MAX_PARALLEL}  タイムアウト: ${AGENT_TIMEOUT}s"
 
 # ---- Issue ごとの処理 ----------------------------------------------------
 
@@ -225,7 +237,7 @@ run_agent() {
   local worktree=$1 prompt_file=$2 log_file=$3
   (
     cd "$worktree" || exit 1
-    claude -p --dangerously-skip-permissions --model "$CLAUDE_MODEL" \
+    claude -p --dangerously-skip-permissions --model "${CLAUDE_MODEL}" \
       < "$prompt_file" 2>&1 | tee "$log_file"
   )
 }
@@ -249,7 +261,7 @@ run_one() {
   prompt_file="${LOG_DIR}/prompt-issue-${issue}-${TIMESTAMP}.txt"
   build_prompt "$issue_json" > "$prompt_file"
 
-  harness_run_with_timeout "$AGENT_TIMEOUT" \
+  harness_run_with_timeout "${AGENT_TIMEOUT}" \
     run_agent "$worktree" "$prompt_file" "$log_file"
   rc=$?
 
@@ -281,7 +293,7 @@ run_parallel() {
   local pids="" issue
   for issue in "$@"; do
     # shellcheck disable=SC2086
-    pids=$(harness_throttle "$MAX_PARALLEL" $pids)
+    pids=$(harness_throttle "${MAX_PARALLEL}" $pids)
     run_one "$issue" &
     pids="$pids $!"
   done
@@ -293,7 +305,7 @@ run_parallel() {
 
   printf '\n=========================================\n'
   printf '📊 結果サマリー\n'
-  printf '  処理: %s 件 / モデル: %s\n' "$#" "$CLAUDE_MODEL"
+  printf '  処理: %s 件 / モデル: %s\n' "$#" "${CLAUDE_MODEL}"
   printf '  ログ: %s\n' "$LOG_DIR"
   printf '=========================================\n'
 }
@@ -321,7 +333,7 @@ run_tmux() {
     # プロンプトはファイル経由で渡す。コマンド行に埋め込むと
     # Issue 本文のクォートやバッククォートで壊れる。
     tmux send-keys -t "$session:issue-${issue}" \
-      "cd $(printf '%q' "$worktree") && claude -p --dangerously-skip-permissions --model $(printf '%q' "$CLAUDE_MODEL") < $(printf '%q' "$prompt_file") 2>&1 | tee $(printf '%q' "$log_file"); echo; echo '[Enter で閉じる]'; read" Enter
+      "cd $(printf '%q' "$worktree") && claude -p --dangerously-skip-permissions --model $(printf '%q' "${CLAUDE_MODEL}") < $(printf '%q' "$prompt_file") 2>&1 | tee $(printf '%q' "$log_file"); echo; echo '[Enter で閉じる]'; read" Enter
   done
 
   harness_log "✅ tmux セッション起動: $session"
