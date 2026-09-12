@@ -1,0 +1,55 @@
+#!/bin/bash
+# on-stop.sh — Stop フック。
+#   1. 未コミット変更の自動コミット (agent/ccx ブランチのみ)
+#   2. セッションログ
+#   3. Slack / macOS 通知
+#
+# session_id と cwd は標準入力の JSON から取る。
+# 以前は CLAUDE_SESSION_ID を読んでいたため、ログが全行 session=unknown になっていた。
+
+set -uo pipefail
+
+HARNESS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/hook-input.sh
+. "$HARNESS_ROOT/lib/hook-input.sh"
+
+HARNESS_DIR="${CLAUDE_HARNESS_DIR:-$HOME/.claude-harness}"
+LOG_DIR="$HARNESS_DIR/logs"
+mkdir -p "$LOG_DIR"
+
+harness_read_hook_input
+SESSION_ID=$(harness_hook_field '.session_id')
+CWD=$(harness_hook_field '.cwd')
+[ -n "$SESSION_ID" ] || SESSION_ID="unknown"
+[ -n "$CWD" ] || CWD=$(pwd)
+
+BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "no-branch")
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+# 1. 自動コミット
+if [ -x "$HARNESS_ROOT/hooks/auto-commit.sh" ]; then
+  HARNESS_HOOK_CWD="$CWD" "$HARNESS_ROOT/hooks/auto-commit.sh" || true
+fi
+
+# 2. ログ
+printf '[%s] STOP session=%s branch=%s cwd=%s\n' \
+  "$TIMESTAMP" "$SESSION_ID" "$BRANCH" "$CWD" >> "$LOG_DIR/sessions.log"
+
+ISSUE=$(printf '%s' "$BRANCH" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
+ISSUE_TEXT=""
+[ -n "$ISSUE" ] && ISSUE_TEXT=" | Issue #${ISSUE}"
+
+# 3a. Slack
+if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+  payload=$(printf '{"text":"✅ Claude Code 完了%s","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"*Claude Code エージェント完了*%s\\nブランチ: `%s`\\n時刻: %s"}}]}' \
+    "$ISSUE_TEXT" "$ISSUE_TEXT" "$BRANCH" "$TIMESTAMP")
+  curl -s --max-time 10 -X POST "$SLACK_WEBHOOK_URL" \
+    -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1 || true
+fi
+
+# 3b. macOS 通知
+if [ "$(uname)" = "Darwin" ]; then
+  osascript -e "display notification \"完了: ${BRANCH}\" with title \"Claude Code\"" >/dev/null 2>&1 || true
+fi
+
+exit 0

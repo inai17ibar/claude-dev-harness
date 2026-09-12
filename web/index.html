@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Claude Dev Harness — Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --bg-card: #181b22;
+    --bg-elev: #1f232c;
+    --border: #2a2f3a;
+    --text: #e5e7eb;
+    --text-dim: #9ca3af;
+    --accent: #a78bfa;
+    --accent-dim: #6d28d9;
+    --success: #4ade80;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --info: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", "Hiragino Sans", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    padding: 24px 32px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  h1 .accent { color: var(--accent); }
+  .meta {
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .meta .repo {
+    color: var(--text);
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    font-size: 12px;
+    background: var(--bg-elev);
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-left: 8px;
+  }
+  main {
+    padding: 24px 32px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  section {
+    margin-bottom: 32px;
+  }
+  section h2 {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin: 0 0 12px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card .label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .card .value {
+    font-size: 28px;
+    font-weight: 600;
+    margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .card .value.success { color: var(--success); }
+  .card .value.danger { color: var(--danger); }
+  .card .value.warn { color: var(--warn); }
+  .card .value.info { color: var(--info); }
+  .card .value.accent { color: var(--accent); }
+  .card .sub {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .two-col {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 800px) {
+    .two-col { grid-template-columns: 1fr; }
+  }
+  .list {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .list-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .list-item:last-child { border-bottom: none; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.success { background: rgba(74, 222, 128, 0.15); color: var(--success); }
+  .badge.failed { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+  .mono {
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .footer-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  button {
+    background: var(--bg-elev);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: var(--accent-dim); border-color: var(--accent); }
+  input[type=text] {
+    background: var(--bg-elev);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    width: 220px;
+  }
+  .progress {
+    height: 4px;
+    background: var(--bg-elev);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 8px;
+  }
+  .progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--info));
+    transition: width 0.3s ease;
+  }
+  .empty {
+    padding: 24px;
+    color: var(--text-dim);
+    text-align: center;
+    font-size: 13px;
+  }
+  .live-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Claude Dev <span class="accent">Harness</span></h1>
+      <div class="meta">
+        <span class="live-dot"></span>
+        <span id="last-updated">読み込み中...</span>
+        <span class="repo" id="repo-name">—</span>
+      </div>
+    </div>
+    <div class="footer-controls">
+      <input type="text" id="cwd-input" placeholder="リポジトリパス (任意)" />
+      <button onclick="refresh()">更新</button>
+      <button onclick="toggleAuto()" id="auto-btn">自動更新: ON</button>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>サマリー</h2>
+      <div class="grid" id="summary-grid"></div>
+    </section>
+
+    <section class="two-col">
+      <div>
+        <h2>最近の実行</h2>
+        <div class="list" id="recent-list"></div>
+      </div>
+      <div>
+        <h2>試行回数の多いIssue</h2>
+        <div class="list" id="top-issues-list"></div>
+      </div>
+    </section>
+  </main>
+
+<script>
+let autoRefresh = true;
+let timer = null;
+
+async function fetchMetrics() {
+  const cwd = document.getElementById('cwd-input').value || '';
+  const url = `/api/metrics?cwd=${encodeURIComponent(cwd)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
+}
+
+function render(data) {
+  if (!data) {
+    document.getElementById('last-updated').textContent = '取得失敗';
+    return;
+  }
+  
+  document.getElementById('last-updated').textContent = 
+    `最終更新: ${new Date(data.timestamp).toLocaleTimeString('ja-JP')}`;
+  document.getElementById('repo-name').textContent = data.repo || '—';
+  
+  const s = data.summary;
+  
+  document.getElementById('summary-grid').innerHTML = `
+    <div class="card">
+      <div class="label">エージェント総実行数</div>
+      <div class="value accent">${s.total_runs}</div>
+      <div class="sub">成功 ${s.success_runs} / 失敗 ${s.failed_runs}</div>
+      <div class="progress"><div class="progress-bar" style="width: ${s.success_rate}%"></div></div>
+    </div>
+    <div class="card">
+      <div class="label">成功率</div>
+      <div class="value ${s.success_rate >= 80 ? 'success' : s.success_rate >= 50 ? 'warn' : 'danger'}">${s.success_rate}<span style="font-size:14px;color:var(--text-dim)">%</span></div>
+      <div class="sub">エージェント完了率</div>
+    </div>
+    <div class="card">
+      <div class="label">Open Issues</div>
+      <div class="value info">${s.open_issues}</div>
+      <div class="sub">処理待ち</div>
+    </div>
+    <div class="card">
+      <div class="label">Open PRs</div>
+      <div class="value warn">${s.open_prs}</div>
+      <div class="sub">レビュー待ち</div>
+    </div>
+    <div class="card">
+      <div class="label">今日のマージ</div>
+      <div class="value success">${s.merged_today}</div>
+      <div class="sub">本日完了</div>
+    </div>
+    <div class="card">
+      <div class="label">本日のセッション</div>
+      <div class="value">${s.sessions_today}</div>
+      <div class="sub">累計 ${s.sessions_total}</div>
+    </div>
+    <div class="card">
+      <div class="label">アクティブ Worktree</div>
+      <div class="value">${s.active_worktrees}</div>
+      <div class="sub">~/worktrees 配下</div>
+    </div>
+    <div class="card">
+      <div class="label">自動コミット累計</div>
+      <div class="value">${s.auto_commits_total}</div>
+      <div class="sub">auto-commit hook 発動</div>
+    </div>
+  `;
+  
+  // 最近の実行
+  if (data.recent_runs.length === 0) {
+    document.getElementById('recent-list').innerHTML = '<div class="empty">実行履歴がまだありません</div>';
+  } else {
+    document.getElementById('recent-list').innerHTML = data.recent_runs.map(r => {
+      const time = r.timestamp ? new Date(r.timestamp).toLocaleString('ja-JP', { 
+        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' 
+      }) : '?';
+      return `
+        <div class="list-item">
+          <div>
+            <span class="badge ${r.status}">${r.status === 'success' ? '✓ 成功' : '✗ 失敗'}</span>
+            <span style="margin-left:8px">Issue #${r.issue}</span>
+          </div>
+          <span class="mono">${time}</span>
+        </div>
+      `;
+    }).join('');
+  }
+  
+  // Top Issues
+  if (data.top_issues.length === 0) {
+    document.getElementById('top-issues-list').innerHTML = '<div class="empty">データなし</div>';
+  } else {
+    document.getElementById('top-issues-list').innerHTML = data.top_issues.map(t => `
+      <div class="list-item">
+        <span>Issue #${t.issue}</span>
+        <span class="badge ${t.attempts >= 3 ? 'failed' : 'success'}">${t.attempts}回</span>
+      </div>
+    `).join('');
+  }
+}
+
+async function refresh() {
+  const data = await fetchMetrics();
+  render(data);
+}
+
+function toggleAuto() {
+  autoRefresh = !autoRefresh;
+  document.getElementById('auto-btn').textContent = `自動更新: ${autoRefresh ? 'ON' : 'OFF'}`;
+  if (autoRefresh) {
+    startTimer();
+  } else {
+    clearInterval(timer);
+  }
+}
+
+function startTimer() {
+  if (timer) clearInterval(timer);
+  timer = setInterval(refresh, 10000);
+}
+
+// 初回ロード
+refresh();
+startTimer();
+</script>
+</body>
+</html>

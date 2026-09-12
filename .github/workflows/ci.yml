@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: シェルのバージョンを記録
+        # macOS の /bin/bash は 3.2。CI の bash 5 では通るのに手元で落ちる、
+        # という差を追えるようにログに残す。
+        run: bash --version | head -1
+
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -x -S warning setup.sh lib/*.sh hooks/*.sh bin/*.sh tests/*.sh
+
+      - name: 自己テスト
+        run: tests/run-tests.sh
+
+      - name: setup.sh --dry-run が通ること
+        run: |
+          export HOME="$(mktemp -d)"
+          "$GITHUB_WORKSPACE/setup.sh" --dry-run
+
+  bash32:
+    # macOS ランナーの /bin/bash は 3.2。実運用と同じ処理系で通ることを確認する。
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash のバージョン
+        run: /bin/bash --version | head -1
+
+      - name: /bin/bash で自己テスト
+        run: /bin/bash tests/run-tests.sh
