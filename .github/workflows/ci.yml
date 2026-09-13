@@ -31,18 +31,6 @@ jobs:
           export HOME="$(mktemp -d)"
           "$GITHUB_WORKSPACE/setup.sh" --dry-run
 
-      - name: plist テンプレートが妥当な XML であること
-        run: |
-          for f in launchd/*.plist.template; do
-            python3 -c "
-import sys, xml.dom.minidom
-src = open('$f').read()
-for ph in ('__HARNESS_ROOT__','__HARNESS_DIR__','__HOME__','__BIN_DIR__','__WORKTREES_BASE__'):
-    src = src.replace(ph, '/tmp/x')
-xml.dom.minidom.parseString(src)
-print('ok: $f')
-"
-          done
 
   bash32:
     # macOS ランナーの /bin/bash は 3.2。実運用と同じ処理系で通ることを確認する。

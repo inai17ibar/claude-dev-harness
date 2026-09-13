@@ -212,6 +212,31 @@ PY
   fi
 fi
 
+# ---- launchd plist テンプレート -------------------------------------------
+group "launchd の plist テンプレートが妥当な XML か"
+if should_run "plist"; then
+  for tpl in "$ROOT"/launchd/*.plist.template; do
+    [ -f "$tpl" ] || continue
+    name=$(basename "$tpl")
+    if err=$(python3 - "$tpl" 2>&1 << 'PY'
+import sys, xml.dom.minidom
+src = open(sys.argv[1], encoding="utf-8").read()
+for ph in ("__HARNESS_ROOT__", "__HARNESS_DIR__", "__HOME__",
+           "__BIN_DIR__", "__WORKTREES_BASE__"):
+    src = src.replace(ph, "/tmp/x")
+if "__" in src:
+    leftover = [w for w in src.split() if w.startswith("<string>__") or "__" in w and w.count("_") >= 4]
+    raise SystemExit("未置換のプレースホルダが残っています: " + " ".join(leftover[:3]))
+xml.dom.minidom.parseString(src)
+PY
+    ); then
+      ok "$name"
+    else
+      ng "$name: $(printf '%s' "$err" | tail -1)"
+    fi
+  done
+fi
+
 # ---- 結果 ----------------------------------------------------------------
 printf '\n=========================================\n'
 printf '  合格 %s / 失敗 %s\n' "$PASS" "$FAIL"
