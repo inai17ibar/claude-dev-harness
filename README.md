@@ -216,7 +216,60 @@ harness-collect-metrics | jq .summary.success_rate
 | `AGENT_TIMEOUT` | `3600` | 1エージェントの上限秒数。`0` で無制限 |
 | `WORKTREES_BASE` | `~/worktrees` | worktree の置き場 |
 | `CLAUDE_HARNESS_DIR` | `~/.claude-harness` | ログ・状態の置き場 |
+| `NTFY_TOPIC` | （未設定） | 設定したときだけ [ntfy](https://ntfy.sh) に通知する |
+| `NTFY_SERVER` | `https://ntfy.sh` | セルフホストするとき |
 | `SLACK_WEBHOOK_URL` | （未設定） | 設定したときだけ Slack に通知する |
+| `HARNESS_NOTIFY_ON_STOP` | `0` | `1` にするとセッション終了ごとにも通知する |
+
+## 通知
+
+### 何を鳴らすか
+
+**人が動く必要があるときだけ**鳴らします。以前はセッションが終わるたびに投げていて、
+累計900件を超えたあたりで誰も見なくなりました。量が多い通知は無いのと同じです。
+
+| 鳴らす | 鳴らさない |
+|---|---|
+| 詰まっている PR がある（CI失敗・コンフリクト） | 通常のセッション終了 |
+| エージェントがタイムアウトした | 成功した実行 |
+| 3回連続失敗でジョブが停止した | レビュー待ちのスキップ |
+| バッテリー・ネット・gh認証で中断した | |
+
+セッション終了ごとの通知が欲しければ `HARNESS_NOTIFY_ON_STOP=1`。
+
+### GitHub に印を残す
+
+詰まった PR には `needs-attention` ラベルが自動で付き、理由（落ちたチェック名や
+コンフリクト）が PR にコメントされます。直れば次の実行でラベルが外れます。
+
+ラベルは通知であると同時に「もう知らせた」という記録でもあります。nightly は
+1日9回走るので、これが無いと同じ PR にコメントが積み上がります。
+
+### ntfy を使う
+
+アカウント不要です。推測されにくいトピック名を決めて、両方のマシンに置きます。
+
+```bash
+# 推測されにくい名前を作る
+echo "harness-$(openssl rand -hex 6)"
+
+# ~/.claude-harness/env.sh に書く (launchd はログインシェルの環境を継承しない)
+cat >> ~/.claude-harness/env.sh << 'EOF'
+export NTFY_TOPIC="harness-xxxxxxxxxxxx"
+EOF
+```
+
+iOS / Android アプリか [ntfy.sh/&lt;topic&gt;](https://ntfy.sh) でそのトピックを購読します。
+iOS アプリを入れておけば Apple Watch にも届きます。
+
+> 無料版はトピック名を知っている人なら誰でも投稿できます。名前は推測されにくいものにし、
+> 秘密は本文に載せないでください。
+
+手で試すとき:
+
+```bash
+NTFY_TOPIC=... lib/notify.sh -t "テスト" -p high "本文"
+```
 
 ## ディレクトリ構成
 
@@ -237,7 +290,7 @@ claude-dev-harness/          # このリポジトリ = 唯一の正
   logs/                      # issue-*.log, ccx/, sessions.log, auto-commit.log
   dashboard/                 # web/ から配られる静的ファイル
   nightly/config.sh          # nightly の設定 (マシンごとに違うので git 管理外)
-  env.sh                     # launchd 用の秘密 (任意)
+  env.sh                     # NTFY_TOPIC や Slack Webhook (任意)
   safety-allow.txt           # 任意
   safety-block.txt           # 任意
 

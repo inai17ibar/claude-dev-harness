@@ -147,20 +147,28 @@ if should_run "open-pr"; then
     {"number":39,"headRefName":"agent/issue-31-20260910_020012","mergeable":"MERGEABLE",
      "statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]},
     {"number":38,"headRefName":"agent/issue-30-20260910_020012","mergeable":"MERGEABLE",
+     "labels":[{"name":"needs-attention"}],
      "statusCheckRollup":[{"__typename":"StatusContext","context":"Vercel","state":"FAILURE"}]},
+    {"number":37,"headRefName":"agent/issue-29-20260910_020012","mergeable":"MERGEABLE",
+     "labels":[{"name":"needs-attention"},{"name":"harness-bot"}],
+     "statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]},
     {"number":48,"headRefName":"fix/halt-dead-supabase-keepalive","mergeable":"MERGEABLE",
      "statusCheckRollup":[]}
   ]'
+  # pr_info_for_issue が jq の --arg で参照する
+  # shellcheck disable=SC2034
+  NEEDS_ATTENTION_LABEL="needs-attention"
   info() { printf '%s' "$fixture" | pr_info_for_issue "$1" | tr '\t' '|'; }
 
-  assert_eq "42|waiting|review"          "$(info 35)" "CI緑・レビュー待ちは waiting"
-  assert_eq "41|stuck|ci_failed:test"    "$(info 25)" "CI失敗は stuck (落ちたチェック名つき)"
-  assert_eq "40|stuck|conflict"          "$(info 32)" "コンフリクトは stuck"
-  assert_eq "39|waiting|ci_running"      "$(info 31)" "CI実行中は waiting"
-  assert_eq "38|stuck|ci_failed:Vercel"  "$(info 30)" "StatusContext の FAILURE も拾う"
-  assert_eq ""                           "$(info 99)" "PRが無いIssueは空を返す"
-  assert_eq ""                           "$(info 3)"  "番号の前方一致で誤爆しない"
-  assert_eq ""                           "$(info 48)" "エージェント以外のPRを拾わない"
+  assert_eq "42|waiting|review|0"          "$(info 35)" "CI緑・レビュー待ちは waiting"
+  assert_eq "41|stuck|ci_failed:test|0"    "$(info 25)" "CI失敗は stuck (落ちたチェック名つき)"
+  assert_eq "40|stuck|conflict|0"          "$(info 32)" "コンフリクトは stuck"
+  assert_eq "39|waiting|ci_running|0"      "$(info 31)" "CI実行中は waiting"
+  assert_eq "38|stuck|ci_failed:Vercel|1"  "$(info 30)" "既にラベルが付いていれば flagged=1"
+  assert_eq "37|waiting|review|1"          "$(info 29)" "直ったのにラベルが残っている状態を検出できる"
+  assert_eq ""                             "$(info 99)" "PRが無いIssueは空を返す"
+  assert_eq ""                             "$(info 3)"  "番号の前方一致で誤爆しない"
+  assert_eq ""                             "$(info 48)" "エージェント以外のPRを拾わない"
 fi
 
 # ---- worktree-clean のブランチ抽出 ---------------------------------------

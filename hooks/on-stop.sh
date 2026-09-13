@@ -48,20 +48,28 @@ printf '[%s] STOP session=%s branch=%s cwd=%s\n' \
   "$TIMESTAMP" "$SESSION_ID" "$BRANCH" "$CWD" >> "$LOG_DIR/sessions.log"
 
 ISSUE=$(printf '%s' "$BRANCH" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
-ISSUE_TEXT=""
-[ -n "$ISSUE" ] && ISSUE_TEXT=" | Issue #${ISSUE}"
 
-# 3a. Slack
-if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-  payload=$(printf '{"text":"✅ Claude Code 完了%s","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"*Claude Code エージェント完了*%s\\nブランチ: `%s`\\n時刻: %s"}}]}' \
-    "$ISSUE_TEXT" "$ISSUE_TEXT" "$BRANCH" "$TIMESTAMP")
-  curl -s --max-time 10 -X POST "$SLACK_WEBHOOK_URL" \
-    -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1 || true
+# 通知は既定で鳴らさない。
+#
+# 以前はセッションが終わるたびに Slack へ投げていた。ログを見ると累計900件超で、
+# その量になると誰も見なくなり、肝心のとき (CI が落ちた・詰まった) に気づけない。
+# 「人が動く必要があるとき」に鳴らす役目は nightly 側に寄せてある。
+#
+# セッション終了ごとの通知が欲しい場合は HARNESS_NOTIFY_ON_STOP=1 を設定する。
+if [ "${HARNESS_NOTIFY_ON_STOP:-0}" = "1" ] && [ -x "$HARNESS_ROOT/lib/notify.sh" ]; then
+  "$HARNESS_ROOT/lib/notify.sh" -t "Claude Code 完了" -p low \
+    "ブランチ: ${BRANCH}${ISSUE:+ (Issue #${ISSUE})}" >/dev/null 2>&1 || true
 fi
 
-# 3b. macOS 通知
-if [ "$(uname)" = "Darwin" ]; then
-  osascript -e "display notification \"完了: ${BRANCH}\" with title \"Claude Code\"" >/dev/null 2>&1 || true
-fi
+# macOS のローカル通知は、自律実行のブランチのときだけ。
+# 対話セッションでは自分で見ているので鳴らす意味がない。
+case "$BRANCH" in
+  agent/issue-*|ccx/trial-*)
+    if [ "$(uname)" = "Darwin" ]; then
+      osascript -e "display notification \"完了: ${BRANCH}\" with title \"Claude Dev Harness\"" \
+        >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
 
 exit 0

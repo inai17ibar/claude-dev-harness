@@ -23,7 +23,7 @@ HARNESS_ROOT=$(cd -P "$(dirname "$_harness_self")/.." && pwd)
 NIGHTLY_DIR="$HARNESS_DIR/nightly"
 NIGHTLY_LOG_DIR="$NIGHTLY_DIR/logs"
 CONFIG_FILE="$NIGHTLY_DIR/config.sh"
-NOTIFY="$HARNESS_ROOT/lib/notify-slack.sh"
+NOTIFY="$HARNESS_ROOT/lib/notify.sh"
 mkdir -p "$NIGHTLY_LOG_DIR"
 
 # launchd はログインシェルの環境を継承しない。SLACK_WEBHOOK_URL のような
@@ -39,7 +39,11 @@ SUMMARY_FILE="$NIGHTLY_LOG_DIR/summary-${TIMESTAMP}.txt"
 
 exec > >(tee -a "$RUN_LOG") 2>&1
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
-notify() { [ -x "$NOTIFY" ] && "$NOTIFY" "$1" 2>/dev/null || true; }
+# notify <本文> [priority] [URL]
+notify() {
+  [ -x "$NOTIFY" ] || return 0
+  "$NOTIFY" -t "Nightly Harness" -p "${2:-default}" ${3:+-u "$3"} "$1" 2>/dev/null || true
+}
 
 log "================================="
 log "🌙 Nightly Harness 実行開始"
@@ -261,16 +265,26 @@ ${stuck_list}
 EOF
 cat "$SUMMARY_FILE"
 
-if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+# 通知は「人が動く必要があるとき」だけ鳴らす。
+# 毎回鳴らすと見なくなり、肝心のときに気づけない。
+notify_lines=""
+[ "$skipped_stuck" -gt 0 ] && notify_lines="${notify_lines}🛑 詰まっている PR が ${skipped_stuck} 件
+${stuck_list}
+"
+[ "$timeout_count" -gt 0 ] && notify_lines="${notify_lines}⏱️ タイムアウトしたエージェント ${timeout_count} 件
+"
+[ "$failed" -gt 0 ] && notify_lines="${notify_lines}❌ 失敗 ${failed} 件
+"
+
+if [ -n "$notify_lines" ]; then
   log ""
-  log "📨 Slack通知送信..."
-  headline="🌙 Nightly Harness 完了"
-  [ "$skipped_stuck" -gt 0 ] && headline="🛑 Nightly Harness — 人手が要る PR が ${skipped_stuck} 件"
-  payload=$(printf '{"text":"%s","blocks":[{"type":"header","text":{"type":"plain_text","text":"%s"}},{"type":"section","fields":[{"type":"mrkdwn","text":"*処理*\\n%s Issue"},{"type":"mrkdwn","text":"*完了*\\n%s"},{"type":"mrkdwn","text":"*レビュー待ち*\\n%s"},{"type":"mrkdwn","text":"*詰まり*\\n%s"},{"type":"mrkdwn","text":"*PR作成*\\n%s"}]},{"type":"context","elements":[{"type":"mrkdwn","text":"モデル: %s | %s"}]}]}' \
-    "$headline" "$headline" "$TARGET_TOTAL" "$done_count" "$skipped_waiting" "$skipped_stuck" "$pr_created" "$MODEL" "$(date '+%Y-%m-%d %H:%M')")
-  curl -s --max-time 15 -X POST "$SLACK_WEBHOOK_URL" \
-    -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1 \
-    || log "  ⚠️  Slack通知失敗"
+  log "📨 通知送信 (要対応あり)"
+  prio="default"
+  [ "$skipped_stuck" -gt 0 ] && prio="high"
+  notify "$notify_lines
+ログ: $RUN_LOG" "$prio"
+else
+  log "📭 要対応なし。通知はしません"
 fi
 
 # 1件も進まず失敗だけがある場合を failed とする。

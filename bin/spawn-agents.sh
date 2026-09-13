@@ -66,6 +66,8 @@ BASE_BRANCH=""
 OPEN_PR_NUM=""
 OPEN_PR_STATE=""
 OPEN_PR_DETAIL=""
+OPEN_PR_FLAGGED=""
+NEEDS_ATTENTION_LABEL="${NEEDS_ATTENTION_LABEL:-needs-attention}"
 ISSUES=""
 
 while [ $# -gt 0 ]; do
@@ -121,7 +123,7 @@ harness_log "並行上限: ${MAX_PARALLEL}  タイムアウト: ${AGENT_TIMEOUT}
 # この区別が無いと、壊れた PR とレビュー待ちの PR がサマリー上で同じ
 # 「スキップ」に見え、詰まっていることに誰も気づけない。
 pr_info_for_issue() {
-  jq -r --arg prefix "agent/issue-$1-" '
+  jq -r --arg prefix "agent/issue-$1-" --arg flag "$NEEDS_ATTENTION_LABEL" '
     def check_state:
       if (.__typename // "") == "CheckRun" then
         (if (.status // "") != "COMPLETED" then "PENDING" else (.conclusion // "NEUTRAL") end)
@@ -134,28 +136,71 @@ pr_info_for_issue() {
     | [ (.statusCheckRollup // [])[] | {n: check_name, s: check_state} ] as $checks
     | ($checks | map(select(.s | IN("FAILURE","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE","ERROR")))) as $bad
     | ($checks | map(select(.s == "PENDING"))) as $pending
-    | if ($pr.mergeable // "") == "CONFLICTING" then
-        [$pr.number, "stuck", "conflict"]
-      elif ($bad | length) > 0 then
-        [$pr.number, "stuck", "ci_failed:" + ($bad | map(.n) | join(","))]
-      elif ($pending | length) > 0 then
-        [$pr.number, "waiting", "ci_running"]
-      else
-        [$pr.number, "waiting", "review"]
-      end
+    | ([ (.labels // [])[].name ] | index($flag) != null) as $flagged
+    | (if ($pr.mergeable // "") == "CONFLICTING" then
+         ["stuck", "conflict"]
+       elif ($bad | length) > 0 then
+         ["stuck", "ci_failed:" + ($bad | map(.n) | join(","))]
+       elif ($pending | length) > 0 then
+         ["waiting", "ci_running"]
+       else
+         ["waiting", "review"]
+       end) as $st
+    | [$pr.number, $st[0], $st[1], (if $flagged then "1" else "0" end)]
     | @tsv' 2>/dev/null
 }
 
 has_open_pr() {
   local issue=$1 info
   info=$(gh pr list --state open --limit 200 \
-    --json number,headRefName,mergeable,statusCheckRollup 2>/dev/null \
+    --json number,headRefName,mergeable,statusCheckRollup,labels 2>/dev/null \
     | pr_info_for_issue "$issue")
   [ -n "$info" ] || return 1
   OPEN_PR_NUM=$(printf '%s' "$info" | cut -f1)
   OPEN_PR_STATE=$(printf '%s' "$info" | cut -f2)
   OPEN_PR_DETAIL=$(printf '%s' "$info" | cut -f3)
+  OPEN_PR_FLAGGED=$(printf '%s' "$info" | cut -f4)
   return 0
+}
+
+# 詰まった PR に印を付ける。
+#
+# ラベルは通知であると同時に「もう知らせた」という記録でもある。
+# nightly は1日9回走るので、これが無いと同じ PR に毎回コメントが積まれる。
+# ラベルが既に付いていれば何もしない。
+mark_needs_attention() {
+  local pr=$1 detail=$2 issue=$3
+
+  gh label create "$NEEDS_ATTENTION_LABEL" --color D93F0B \
+    --description "エージェントのPRが自力で進めない状態。人手が要る" >/dev/null 2>&1 || true
+
+  if ! gh pr edit "$pr" --add-label "$NEEDS_ATTENTION_LABEL" >/dev/null 2>&1; then
+    harness_log "   ⚠️  PR #${pr} にラベルを付けられませんでした"
+    return 1
+  fi
+
+  local reason
+  case "$detail" in
+    conflict)     reason="ベースブランチとコンフリクトしています。" ;;
+    ci_failed:*)  reason="CI が失敗しています (${detail#ci_failed:})。" ;;
+    *)            reason="自力で進めない状態です ($detail)。" ;;
+  esac
+
+  gh pr comment "$pr" --body "🛑 このPRは自力で進めません。${reason}
+
+Harness はこの状態を検出すると Issue #${issue} をスキップし続けます。
+直すか、このPRを閉じて Issue を作り直してください。
+（対応後は \`${NEEDS_ATTENTION_LABEL}\` ラベルが自動で外れます）" >/dev/null 2>&1 || true
+
+  harness_log "   🏷️  PR #${pr} に ${NEEDS_ATTENTION_LABEL} を付けました"
+  return 0
+}
+
+# 直ったら印を外す
+clear_needs_attention() {
+  local pr=$1
+  gh pr edit "$pr" --remove-label "$NEEDS_ATTENTION_LABEL" >/dev/null 2>&1 \
+    && harness_log "   🏷️  PR #${pr} の ${NEEDS_ATTENTION_LABEL} を外しました" || true
 }
 
 fetch_issue() {
@@ -306,8 +351,10 @@ run_one() {
   if ! $FORCE && has_open_pr "$issue"; then
     if [ "$OPEN_PR_STATE" = "stuck" ]; then
       harness_log "🛑 Issue #${issue}: PR #${OPEN_PR_NUM} が詰まっています (${OPEN_PR_DETAIL})。人手が要ります"
+      [ "$OPEN_PR_FLAGGED" = "1" ] || mark_needs_attention "$OPEN_PR_NUM" "$OPEN_PR_DETAIL" "$issue"
     else
       harness_log "⏭️  Issue #${issue}: 未マージの PR #${OPEN_PR_NUM} があるためスキップ (${OPEN_PR_DETAIL})"
+      [ "$OPEN_PR_FLAGGED" = "1" ] && clear_needs_attention "$OPEN_PR_NUM"
     fi
     emit skipped "issue=$issue" "pr=$OPEN_PR_NUM" "reason=open_pr" \
       "pr_state=$OPEN_PR_STATE" "detail=$OPEN_PR_DETAIL"

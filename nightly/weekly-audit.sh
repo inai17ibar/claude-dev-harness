@@ -80,7 +80,7 @@ PROMPT
 done
 
 log "✅ Weekly Audit 完了"
-NOTIFY="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/notify-slack.sh"
+NOTIFY="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/notify.sh"
 if [ -x "$NOTIFY" ]; then
-  "$NOTIFY" "🔍 Weekly Audit 完了。ログ: $RUN_LOG" || true
+  "$NOTIFY" -t "Weekly Audit" -p low "完了。起票結果はログを参照: $RUN_LOG" || true
 fi
