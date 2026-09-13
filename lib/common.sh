@@ -131,3 +131,31 @@ harness_run_with_timeout() {
   done
   wait "$pid"
 }
+
+# ---- 一時的な失敗のリトライ ----------------------------------------------
+# GitHub の API は 502 や GraphQL の "Something went wrong" を返すことがある。
+# 失敗して困る操作 (マージを止める、など) は数回試す。
+#
+# 使い方: harness_retry <試行回数> <待ち秒> <コマンド...>
+#   最後の試行の標準エラーは握り潰さずに返す。
+harness_retry() {
+  local attempts=$1 delay=$2
+  shift 2
+  local i=1 out rc
+  while :; do
+    # if の中で実行すると、分岐が走らなかったときの $? は if 文自体の
+    # 終了コード (=0) になり、元の失敗コードが失われる。
+    out=$("$@" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      return 0
+    fi
+    if [ "$i" -ge "$attempts" ]; then
+      printf '%s\n' "$out" >&2
+      return "$rc"
+    fi
+    i=$((i + 1))
+    sleep "$delay"
+  done
+}

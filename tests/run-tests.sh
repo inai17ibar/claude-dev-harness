@@ -233,6 +233,36 @@ if should_run "event-contract"; then
   done
 fi
 
+# ---- リトライ -------------------------------------------------------------
+group "harness_retry — 一時的な失敗を数回試す"
+if should_run "retry"; then
+  # shellcheck disable=SC1090
+  . "$ROOT/lib/common.sh"
+
+  # 3回目で成功するコマンド
+  cnt=$(mktemp)
+  echo 0 > "$cnt"
+  flaky() {
+    n=$(cat "$cnt"); n=$((n + 1)); echo "$n" > "$cnt"
+    [ "$n" -ge 3 ] && { echo ok; return 0; }
+    echo "一時エラー" >&2
+    return 1
+  }
+  out=$(harness_retry 5 0 flaky 2>/dev/null)
+  assert_eq "ok" "$out" "失敗しても試行回数まで粘る"
+  assert_eq "3" "$(cat "$cnt")" "成功した時点で止める"
+
+  # 常に失敗するコマンドは、最後の stderr を返して失敗する
+  always_fail() { echo "だめでした" >&2; return 7; }
+  err=$(harness_retry 2 0 always_fail 2>&1 >/dev/null); rc=$?
+  assert_eq "7" "$rc" "最後の終了コードを返す"
+  case "$err" in
+    *だめでした*) ok "最後の stderr を握り潰さない" ;;
+    *) ng "最後の stderr を握り潰さない (got '$err')" ;;
+  esac
+  rm -f "$cnt"
+fi
+
 # ---- symlink 経由の呼び出し ---------------------------------------------
 group "symlink 経由で呼んでも lib を見つけられる"
 if should_run "symlink"; then

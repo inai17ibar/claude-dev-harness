@@ -501,16 +501,33 @@ CI が見るのは「動くか」で、こちらは「この直し方でよい�
   # 件数が読めなかった ("?") 場合も止める側に倒す。レビューの出力が
   # 崩れているときに黙って通すと、レビューを置いた意味が無くなる。
   if [ "$findings" != "0" ]; then
-    gh label create "$REVIEW_LABEL" --color FBCA04 \
-      --description "自動レビューが指摘を出したPR。人が読むまで自動マージしない" >/dev/null 2>&1 || true
-    gh pr edit "$pr_num" --add-label "$REVIEW_LABEL" >/dev/null 2>&1 || true
+    # ここは失敗すると「止めたい PR が自動マージされる」ので、
+    # 握り潰さずリトライし、それでも駄目なら大きく騒ぐ。
+    # GitHub の API は 502 や GraphQL の一時エラーを返すことがある。
+    local label_ok=false auto_ok=false
 
-    # PR 作成直後に auto-merge が予約済みのことがある。ラベルを貼るだけでは
-    # 止まらないので、予約そのものを解除する。
-    if gh pr merge "$pr_num" --disable-auto >/dev/null 2>&1; then
-      harness_log "   🛑 Issue #${issue}: 指摘 ${findings} 件。自動マージを解除しました"
+    harness_retry 3 5 gh label create "$REVIEW_LABEL" --color FBCA04 \
+      --description "自動レビューが指摘を出したPR。人が読むまで自動マージしない" \
+      >/dev/null 2>&1 || true   # 既にあれば失敗するので、ここは無視してよい
+
+    if harness_retry 3 5 gh pr edit "$pr_num" --add-label "$REVIEW_LABEL" >/dev/null; then
+      label_ok=true
+    fi
+    if harness_retry 3 5 gh pr merge "$pr_num" --disable-auto >/dev/null; then
+      auto_ok=true
+    fi
+
+    if $label_ok && $auto_ok; then
+      harness_log "   🛑 Issue #${issue}: 指摘 ${findings} 件。ラベルを付け、自動マージを解除しました"
+    elif $label_ok; then
+      harness_log "   🛑 Issue #${issue}: 指摘 ${findings} 件。ラベルは付けましたが自動マージの解除に失敗"
+      harness_log "      → ワークフロー側がラベルを見て止めるはずですが、PR #${pr_num} を確認してください"
     else
-      harness_log "   🛑 Issue #${issue}: 指摘 ${findings} 件。${REVIEW_LABEL} を付けました"
+      # ラベルが付いていないと、リポジトリ側のワークフローも止められない。
+      # 黙って通すのが一番まずいので、失敗として数えて通知に乗せる。
+      harness_log "   ❌ Issue #${issue}: 指摘 ${findings} 件だが PR #${pr_num} を止められませんでした"
+      harness_log "      → 自動マージされる可能性があります。手で確認してください"
+      emit failed "issue=$issue" "pr=$pr_num" "stage=review_gate"
     fi
   fi
 
