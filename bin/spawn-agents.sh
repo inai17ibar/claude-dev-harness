@@ -64,6 +64,8 @@ ADMIN_MERGE=false
 FORCE=false
 BASE_BRANCH=""
 OPEN_PR_NUM=""
+OPEN_PR_STATE=""
+OPEN_PR_DETAIL=""
 ISSUES=""
 
 while [ $# -gt 0 ]; do
@@ -109,20 +111,50 @@ harness_log "並行上限: ${MAX_PARALLEL}  タイムアウト: ${AGENT_TIMEOUT}
 # 番号付きで渡すと単なる全文検索に落ちて無関係な PR まで拾い、
 # エージェント PR が1つでも開いていれば全 Issue がスキップされる。
 
-# stdin の PR 一覧 JSON から、この Issue のエージェント PR 番号を返す。
-# ネットワークに触らないのでテストできる。
-pr_number_for_issue() {
-  jq -r --arg prefix "agent/issue-$1-" \
-    '[ .[] | select((.headRefName // "") | startswith($prefix)) ] | .[0].number // empty' \
-    2>/dev/null
+# stdin の PR 一覧 JSON から、この Issue のエージェント PR を探し
+#   <番号> <TAB> <waiting|stuck> <TAB> <詳細>
+# を返す。ネットワークに触らないのでテストできる。
+#
+# waiting = 人間待ち (CI 実行中 / レビュー待ち)。放っておけば進む
+# stuck   = 機械では進めない (CI 失敗 / コンフリクト)。人間が見ないと永久に止まる
+#
+# この区別が無いと、壊れた PR とレビュー待ちの PR がサマリー上で同じ
+# 「スキップ」に見え、詰まっていることに誰も気づけない。
+pr_info_for_issue() {
+  jq -r --arg prefix "agent/issue-$1-" '
+    def check_state:
+      if (.__typename // "") == "CheckRun" then
+        (if (.status // "") != "COMPLETED" then "PENDING" else (.conclusion // "NEUTRAL") end)
+      else
+        (.state // "PENDING")
+      end;
+    def check_name: (.name // .context // "check");
+    [ .[] | select((.headRefName // "") | startswith($prefix)) ] | .[0] // empty
+    | . as $pr
+    | [ (.statusCheckRollup // [])[] | {n: check_name, s: check_state} ] as $checks
+    | ($checks | map(select(.s | IN("FAILURE","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE","ERROR")))) as $bad
+    | ($checks | map(select(.s == "PENDING"))) as $pending
+    | if ($pr.mergeable // "") == "CONFLICTING" then
+        [$pr.number, "stuck", "conflict"]
+      elif ($bad | length) > 0 then
+        [$pr.number, "stuck", "ci_failed:" + ($bad | map(.n) | join(","))]
+      elif ($pending | length) > 0 then
+        [$pr.number, "waiting", "ci_running"]
+      else
+        [$pr.number, "waiting", "review"]
+      end
+    | @tsv' 2>/dev/null
 }
 
 has_open_pr() {
-  local issue=$1 num
-  num=$(gh pr list --state open --limit 200 --json number,headRefName 2>/dev/null \
-    | pr_number_for_issue "$issue")
-  [ -n "$num" ] || return 1
-  OPEN_PR_NUM="$num"
+  local issue=$1 info
+  info=$(gh pr list --state open --limit 200 \
+    --json number,headRefName,mergeable,statusCheckRollup 2>/dev/null \
+    | pr_info_for_issue "$issue")
+  [ -n "$info" ] || return 1
+  OPEN_PR_NUM=$(printf '%s' "$info" | cut -f1)
+  OPEN_PR_STATE=$(printf '%s' "$info" | cut -f2)
+  OPEN_PR_DETAIL=$(printf '%s' "$info" | cut -f3)
   return 0
 }
 
@@ -272,8 +304,13 @@ run_one() {
   local issue=$1 issue_json title worktree log_file prompt_file rc
 
   if ! $FORCE && has_open_pr "$issue"; then
-    harness_log "⏭️  Issue #${issue}: 未マージの PR #${OPEN_PR_NUM} があるためスキップ (--force で上書き)"
-    emit skipped "issue=$issue" "pr=$OPEN_PR_NUM" "reason=open_pr"
+    if [ "$OPEN_PR_STATE" = "stuck" ]; then
+      harness_log "🛑 Issue #${issue}: PR #${OPEN_PR_NUM} が詰まっています (${OPEN_PR_DETAIL})。人手が要ります"
+    else
+      harness_log "⏭️  Issue #${issue}: 未マージの PR #${OPEN_PR_NUM} があるためスキップ (${OPEN_PR_DETAIL})"
+    fi
+    emit skipped "issue=$issue" "pr=$OPEN_PR_NUM" "reason=open_pr" \
+      "pr_state=$OPEN_PR_STATE" "detail=$OPEN_PR_DETAIL"
     return 0
   fi
 

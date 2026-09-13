@@ -218,13 +218,26 @@ count_event() {
   echo "${n:-0}"
 }
 
+count_matching() {
+  local n
+  n=$(grep -c "$1" "$RUN_LOG" 2>/dev/null | head -1 | tr -dc '0-9')
+  echo "${n:-0}"
+}
+
 done_count=$(count_event agent_done)
 timeout_count=$(count_event agent_timeout)
-skipped_count=$(count_event skipped)
 pr_created=$(count_event pr_created)
 merge_scheduled=$(count_event merge_scheduled)
 merged=$(count_event merged)
 failed=$(count_event failed)
+
+# スキップは2種類ある。放っておけば進むもの (レビュー待ち・CI実行中) と、
+# 人が見ないと永久に止まるもの (CI失敗・コンフリクト)。
+# 同じ「スキップ」に丸めると、詰まっていることに誰も気づけない。
+skipped_waiting=$(count_matching "^HARNESS_EVENT:skipped .*pr_state=waiting")
+skipped_stuck=$(count_matching "^HARNESS_EVENT:skipped .*pr_state=stuck")
+stuck_list=$(grep "^HARNESS_EVENT:skipped .*pr_state=stuck" "$RUN_LOG" 2>/dev/null \
+  | sed -E 's/.*issue=([0-9]+) pr=([0-9]+).*detail=([^ ]*).*/  #\1 → PR #\2 (\3)/' || true)
 
 cat > "$SUMMARY_FILE" << EOF
 🌙 Nightly Harness レポート ($(date '+%Y-%m-%d %H:%M'))
@@ -233,12 +246,16 @@ cat > "$SUMMARY_FILE" << EOF
 処理: ${TARGET_TOTAL} Issue
   完了: ${done_count}
   タイムアウト: ${timeout_count}
-  スキップ(既存PR): ${skipped_count}
+  スキップ(レビュー待ち): ${skipped_waiting}
+  詰まり(要対応): ${skipped_stuck}
   失敗: ${failed}
 PR作成: ${pr_created}
 マージ予約: ${merge_scheduled}
 マージ完了: ${merged}
-
+${stuck_list:+
+🛑 人手が要る PR:
+${stuck_list}
+}
 モデル: ${MODEL}
 ログ: ${RUN_LOG}
 EOF
@@ -247,8 +264,10 @@ cat "$SUMMARY_FILE"
 if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
   log ""
   log "📨 Slack通知送信..."
-  payload=$(printf '{"text":"🌙 Nightly Harness 完了","blocks":[{"type":"header","text":{"type":"plain_text","text":"🌙 Nightly Harness レポート"}},{"type":"section","fields":[{"type":"mrkdwn","text":"*処理*\\n%s Issue"},{"type":"mrkdwn","text":"*完了*\\n%s"},{"type":"mrkdwn","text":"*スキップ*\\n%s"},{"type":"mrkdwn","text":"*PR作成*\\n%s"}]},{"type":"context","elements":[{"type":"mrkdwn","text":"モデル: %s | %s"}]}]}' \
-    "$TARGET_TOTAL" "$done_count" "$skipped_count" "$pr_created" "$MODEL" "$(date '+%Y-%m-%d %H:%M')")
+  headline="🌙 Nightly Harness 完了"
+  [ "$skipped_stuck" -gt 0 ] && headline="🛑 Nightly Harness — 人手が要る PR が ${skipped_stuck} 件"
+  payload=$(printf '{"text":"%s","blocks":[{"type":"header","text":{"type":"plain_text","text":"%s"}},{"type":"section","fields":[{"type":"mrkdwn","text":"*処理*\\n%s Issue"},{"type":"mrkdwn","text":"*完了*\\n%s"},{"type":"mrkdwn","text":"*レビュー待ち*\\n%s"},{"type":"mrkdwn","text":"*詰まり*\\n%s"},{"type":"mrkdwn","text":"*PR作成*\\n%s"}]},{"type":"context","elements":[{"type":"mrkdwn","text":"モデル: %s | %s"}]}]}' \
+    "$headline" "$headline" "$TARGET_TOTAL" "$done_count" "$skipped_waiting" "$skipped_stuck" "$pr_created" "$MODEL" "$(date '+%Y-%m-%d %H:%M')")
   curl -s --max-time 15 -X POST "$SLACK_WEBHOOK_URL" \
     -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1 \
     || log "  ⚠️  Slack通知失敗"
@@ -256,7 +275,8 @@ fi
 
 # 1件も進まず失敗だけがある場合を failed とする。
 # 既存PRによるスキップは失敗ではない。
-if [ "$failed" -gt 0 ] && [ "$done_count" -eq 0 ] && [ "$skipped_count" -eq 0 ]; then
+if [ "$failed" -gt 0 ] && [ "$done_count" -eq 0 ] \
+  && [ "$skipped_waiting" -eq 0 ] && [ "$skipped_stuck" -eq 0 ]; then
   echo "FINAL_STATUS=failed" >> "$RUN_LOG"
   log "❌ Nightly Harness 完了 (失敗のみ)"
   exit 1

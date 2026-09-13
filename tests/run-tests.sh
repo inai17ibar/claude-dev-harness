@@ -136,19 +136,31 @@ group "spawn-agents — 未マージPRの検出"
 # 無関係なPRまで拾って全Issueがスキップされる。ブランチ名の前方一致で判定する。
 if should_run "open-pr"; then
   # shellcheck disable=SC1090
-  . /dev/stdin <<< "$(sed -n '/^pr_number_for_issue/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
+  . /dev/stdin <<< "$(sed -n '/^pr_info_for_issue/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
   fixture='[
-    {"number":42,"headRefName":"agent/issue-35-20260910_220009"},
-    {"number":41,"headRefName":"agent/issue-25-20260910_020012"},
-    {"number":40,"headRefName":"agent/issue-32-20260910_020012"},
-    {"number":48,"headRefName":"fix/halt-dead-supabase-keepalive"}
+    {"number":42,"headRefName":"agent/issue-35-20260910_220009","mergeable":"MERGEABLE",
+     "statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]},
+    {"number":41,"headRefName":"agent/issue-25-20260910_020012","mergeable":"MERGEABLE",
+     "statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE"}]},
+    {"number":40,"headRefName":"agent/issue-32-20260910_020012","mergeable":"CONFLICTING",
+     "statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]},
+    {"number":39,"headRefName":"agent/issue-31-20260910_020012","mergeable":"MERGEABLE",
+     "statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]},
+    {"number":38,"headRefName":"agent/issue-30-20260910_020012","mergeable":"MERGEABLE",
+     "statusCheckRollup":[{"__typename":"StatusContext","context":"Vercel","state":"FAILURE"}]},
+    {"number":48,"headRefName":"fix/halt-dead-supabase-keepalive","mergeable":"MERGEABLE",
+     "statusCheckRollup":[]}
   ]'
-  assert_eq "42" "$(printf '%s' "$fixture" | pr_number_for_issue 35)" "自分のIssueのPRを見つける"
-  assert_eq "41" "$(printf '%s' "$fixture" | pr_number_for_issue 25)" "別のIssueのPRを取り違えない"
-  assert_eq ""   "$(printf '%s' "$fixture" | pr_number_for_issue 99)" "PRが無いIssueは空を返す"
-  # issue-3 が issue-35 のブランチに前方一致してしまわないこと
-  assert_eq ""   "$(printf '%s' "$fixture" | pr_number_for_issue 3)"  "番号の前方一致で誤爆しない"
-  assert_eq ""   "$(printf '%s' "$fixture" | pr_number_for_issue 48)" "エージェント以外のPRを拾わない"
+  info() { printf '%s' "$fixture" | pr_info_for_issue "$1" | tr '\t' '|'; }
+
+  assert_eq "42|waiting|review"          "$(info 35)" "CI緑・レビュー待ちは waiting"
+  assert_eq "41|stuck|ci_failed:test"    "$(info 25)" "CI失敗は stuck (落ちたチェック名つき)"
+  assert_eq "40|stuck|conflict"          "$(info 32)" "コンフリクトは stuck"
+  assert_eq "39|waiting|ci_running"      "$(info 31)" "CI実行中は waiting"
+  assert_eq "38|stuck|ci_failed:Vercel"  "$(info 30)" "StatusContext の FAILURE も拾う"
+  assert_eq ""                           "$(info 99)" "PRが無いIssueは空を返す"
+  assert_eq ""                           "$(info 3)"  "番号の前方一致で誤爆しない"
+  assert_eq ""                           "$(info 48)" "エージェント以外のPRを拾わない"
 fi
 
 # ---- worktree-clean のブランチ抽出 ---------------------------------------
@@ -167,6 +179,44 @@ if should_run "merged-branches"; then
   got=$(printf '%s\n' "$fixture" | merged_agent_branches | tr '\n' ',')
   assert_eq "agent/issue-59-20260913_113514,agent/issue-1-20260620_095825,ccx/trial-2-20260101_000000," \
     "$got" "+ と * を剥がし、agent/ccx だけを拾う"
+fi
+
+# ---- イベント形式の契約 ---------------------------------------------------
+group "spawn-agents が出すイベントを nightly が解析できるか"
+# 出す側と数える側が別ファイルにあるので、形式がずれても静かに 0 件になる。
+# 実際に emit させて、nightly の集計と同じ手段で読み戻す。
+if should_run "event-contract"; then
+  # shellcheck disable=SC1090
+  . /dev/stdin <<< "$(sed -n '/^emit()/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
+
+  line=$(emit skipped "issue=59" "pr=42" "reason=open_pr" "pr_state=stuck" "detail=ci_failed:test")
+  assert_eq "HARNESS_EVENT:skipped issue=59 pr=42 reason=open_pr pr_state=stuck detail=ci_failed:test" \
+    "$line" "emit の出力形式"
+
+  # nightly-run.sh が使っているのと同じ grep / sed をソースから抜き出して当てる
+  grep_stuck=$(printf '%s\n' "$line" | grep -c "^HARNESS_EVENT:skipped .*pr_state=stuck")
+  assert_eq "1" "$grep_stuck" "nightly の grep が stuck を数えられる"
+
+  grep_wait=$(printf '%s\n' "$line" | grep -c "^HARNESS_EVENT:skipped .*pr_state=waiting" || true)
+  assert_eq "0" "$grep_wait" "waiting とは取り違えない"
+
+  # nightly-run.sh が使っている sed をそのまま持ってきて当てる。
+  # 片方だけ直したら、この行が nightly-run.sh に見つからず落ちる。
+  sed_expr='s/.*issue=([0-9]+) pr=([0-9]+).*detail=([^ ]*).*/  #\1 → PR #\2 (\3)/'
+  if grep -qF "$sed_expr" "$ROOT/nightly/nightly-run.sh"; then
+    ok "テストの sed が nightly-run.sh と一致している"
+  else
+    ng "テストの sed が nightly-run.sh に見つからない (両方そろえること)"
+  fi
+  rendered=$(printf '%s\n' "$line" | sed -E "$sed_expr")
+  assert_eq "  #59 → PR #42 (ci_failed:test)" "$rendered" "nightly の sed が PR 一覧行にできる"
+
+  # 他のイベントも nightly の count_event が拾える形か
+  for kind in agent_done agent_timeout pr_created merge_scheduled merged failed; do
+    l=$(emit "$kind" "issue=1")
+    c=$(printf '%s\n' "$l" | grep -c "^HARNESS_EVENT:$kind ")
+    assert_eq "1" "$c" "count_event が $kind を拾える"
+  done
 fi
 
 # ---- symlink 経由の呼び出し ---------------------------------------------
