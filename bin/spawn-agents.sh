@@ -308,7 +308,9 @@ run_one() {
 }
 
 run_parallel() {
-  harness_log "🚀 $# 件の Issue を ${MAX_PARALLEL} 並行で処理"
+  # $@ は後段の wait ループで PID 一覧に置き換えるので、件数はここで控える
+  local total=$#
+  harness_log "🚀 ${total} 件の Issue を ${MAX_PARALLEL} 並行で処理"
 
   if $DRY_RUN; then
     local i
@@ -334,7 +336,7 @@ run_parallel() {
 
   printf '\n=========================================\n'
   printf '📊 結果サマリー\n'
-  printf '  処理: %s 件 / モデル: %s\n' "$#" "${CLAUDE_MODEL}"
+  printf '  処理: %s 件 / モデル: %s\n' "$total" "${CLAUDE_MODEL}"
   printf '  ログ: %s\n' "$LOG_DIR"
   printf '=========================================\n'
 }
