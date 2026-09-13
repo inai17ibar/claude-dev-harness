@@ -1,0 +1,97 @@
+# エージェントの PR を自動マージする。
+#
+# Claude Dev Harness を使うリポジトリに置く。次の2つのラベルが付いた PR は
+# 対象から外し、人が判断するまでマージしない。
+#
+#   needs-attention  … 機械が進めない (CI失敗・コンフリクト)。harness が自動で付け外しする
+#   review-findings  … 自動レビューが指摘を出した。外すのは人間の仕事で、
+#                      外すこと自体が「読んだ・承認した」の合図になる
+#
+# unlabeled でも起動するので、ラベルを外すとその場で自動マージが再開する。
+name: Auto-merge harness PRs
+
+on:
+  pull_request:
+    types: [opened, labeled, unlabeled, synchronize, ready_for_review]
+  check_suite:
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request' &&
+       (startsWith(github.head_ref, 'agent/issue-') ||
+        contains(github.event.pull_request.labels.*.name, 'harness-bot'))) ||
+      github.event_name == 'check_suite'
+
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # check_suite イベントには github.event.pull_request が無い (null)。
+          # PR 番号は check_suite.pull_requests[] から取る。
+          PR_NUMBERS: >-
+            ${{ github.event_name == 'pull_request'
+                && github.event.pull_request.number
+                || join(github.event.check_suite.pull_requests.*.number, ' ') }}
+          BLOCKING_LABELS: "needs-attention review-findings"
+        run: |
+          # checkout していないので gh はリポジトリを git から判定できない。
+          # -R を付けないと "fatal: not a git repository" で失敗する。
+          if [ -z "$(echo "$PR_NUMBERS" | tr -d ' ')" ]; then
+            echo "対象の PR がありません (event=${{ github.event_name }})"
+            exit 0
+          fi
+
+          for pr in $PR_NUMBERS; do
+            echo "── PR #$pr ──"
+
+            pr_json=$(gh pr view "$pr" -R "$REPO" \
+              --json headRefName,labels,state 2>/dev/null) \
+              || { echo "  ⚠️  PR 情報を取得できませんでした"; continue; }
+
+            state=$(printf '%s' "$pr_json" | jq -r '.state')
+            head_ref=$(printf '%s' "$pr_json" | jq -r '.headRefName')
+            labels=$(printf '%s' "$pr_json" | jq -r '.labels[].name')
+
+            if [ "$state" != "OPEN" ]; then
+              echo "  ⏭️  OPEN ではありません ($state)"; continue
+            fi
+
+            case "$head_ref" in
+              agent/issue-*) ;;
+              *)
+                if ! printf '%s\n' "$labels" | grep -qx "harness-bot"; then
+                  echo "  ⏭️  harness の PR ではありません ($head_ref)"; continue
+                fi ;;
+            esac
+
+            # 人の判断待ちのラベルが付いていたら、予約せず解除する。
+            # レビューは PR 作成の数十秒後に貼るので、貼られた時点では
+            # 既に予約済みのことがある。解除までここでやる。
+            blocked=""
+            for label in $BLOCKING_LABELS; do
+              if printf '%s\n' "$labels" | grep -qx "$label"; then
+                blocked="$label"
+                break
+              fi
+            done
+            if [ -n "$blocked" ]; then
+              echo "  🛑 $blocked が付いているのでマージしません"
+              gh pr merge "$pr" -R "$REPO" --disable-auto >/dev/null 2>&1 \
+                && echo "     予約済みの自動マージを解除しました" || true
+              continue
+            fi
+
+            if gh pr merge --auto --merge --delete-branch -R "$REPO" "$pr"; then
+              echo "  ✅ auto-merge を有効化"
+            else
+              echo "  ⚠️  auto-merge を有効化できませんでした (上のエラーを参照)"
+            fi
+          done

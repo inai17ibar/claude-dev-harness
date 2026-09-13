@@ -73,6 +73,11 @@ OPEN_PR_STATE=""
 OPEN_PR_DETAIL=""
 OPEN_PR_FLAGGED=""
 NEEDS_ATTENTION_LABEL="${NEEDS_ATTENTION_LABEL:-needs-attention}"
+# レビューの指摘が付いた PR の印。needs-attention とは意味も持ち主も違う。
+#   needs-attention  = 機械が進めない (CI失敗・コンフリクト)。直れば自動で外れる
+#   review-findings  = 機械は進めるが人が読むべき。外すのは人間の仕事で、
+#                      外すこと自体が「読んだ・承認した」の合図になる
+REVIEW_LABEL="${REVIEW_LABEL:-review-findings}"
 ISSUES=""
 
 while [ $# -gt 0 ]; do
@@ -471,14 +476,43 @@ PROMPT
     *)          findings="?" ;;
   esac
 
+  local footer
+  if [ "$findings" = "0" ]; then
+    footer="指摘が無かったので、このPRは自動マージの対象のままです。"
+  else
+    footer="指摘があるため **自動マージを解除しました**。内容を確認し、
+問題なければ \`${REVIEW_LABEL}\` ラベルを外してください。外すと自動マージが再開します。"
+  fi
+
   gh pr comment "$pr_num" --body "## 🔍 自動レビュー
 
 $(cat "$out_file")
 
+---
+${footer}
+
 <sub>Claude Dev Harness が PR 作成時に自動で実行しました（model: \`${model}\`）。
-CI とは別物で、マージはブロックしません。見当違いの指摘は無視してください。</sub>" >/dev/null 2>&1 \
+CI が見るのは「動くか」で、こちらは「この直し方でよいか」です。見当違いの指摘は無視してください。</sub>" >/dev/null 2>&1 \
     && harness_log "   ✅ Issue #${issue}: レビューを PR #${pr_num} にコメント (${findings})" \
     || harness_log "   ⚠️  Issue #${issue}: レビューのコメント投稿に失敗"
+
+  # 指摘があれば人の目に回す。
+  #
+  # 件数が読めなかった ("?") 場合も止める側に倒す。レビューの出力が
+  # 崩れているときに黙って通すと、レビューを置いた意味が無くなる。
+  if [ "$findings" != "0" ]; then
+    gh label create "$REVIEW_LABEL" --color FBCA04 \
+      --description "自動レビューが指摘を出したPR。人が読むまで自動マージしない" >/dev/null 2>&1 || true
+    gh pr edit "$pr_num" --add-label "$REVIEW_LABEL" >/dev/null 2>&1 || true
+
+    # PR 作成直後に auto-merge が予約済みのことがある。ラベルを貼るだけでは
+    # 止まらないので、予約そのものを解除する。
+    if gh pr merge "$pr_num" --disable-auto >/dev/null 2>&1; then
+      harness_log "   🛑 Issue #${issue}: 指摘 ${findings} 件。自動マージを解除しました"
+    else
+      harness_log "   🛑 Issue #${issue}: 指摘 ${findings} 件。${REVIEW_LABEL} を付けました"
+    fi
+  fi
 
   emit reviewed "issue=$issue" "pr=$pr_num" "findings=${findings:-0}"
   return 0
