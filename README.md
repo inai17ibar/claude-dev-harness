@@ -115,6 +115,46 @@ worktree-clean --all-repos  # 他リポジトリの残骸も対象にする
 ディレクトリしか触りません**。`--all-repos` を付けても、他のリポジトリに現役登録されている
 worktree はスキップします。
 
+### nightly / weekly-audit — 常時稼働マシンでの自律運用
+
+常時起動しているマシン (Mac mini など) に launchd で登録すると、`automation` ラベルの付いた
+Issue を自動で実装し PR を作ります。ノート PC には入れないでください
+(蓋を閉じている間は走らず、起きた瞬間にまとめて走ります)。
+
+```bash
+cp nightly/config.example.sh ~/.claude-harness/nightly/config.sh
+vi ~/.claude-harness/nightly/config.sh   # REPOS を書く
+./launchd/install.sh --dry-run           # 生成される plist を確認
+./launchd/install.sh
+```
+
+| ジョブ | スケジュール | 動作 |
+|---|---|---|
+| `com.harness.nightly` | 2:00 と 8〜22時の偶数時 | `automation` ラベルの Issue を `spawn-agents --pr` で実装 |
+| `com.harness.weekly-audit` | 土 7:00 | コードベースを監査して `idea` ラベルの Issue を起票するだけ (実装はしない) |
+
+想定している回し方は「`idea` で溜める → 人間が選んで `automation` を付ける → 夜間に実装されて
+PR が立つ → 朝レビューしてマージ」です。
+
+集計は `spawn-agents` が出す `HARNESS_EVENT:` マーカーを数えます。ログの日本語文言を
+grep する作りだと、文言を1文字直した瞬間に黙って 0 件と報告されるためです。
+
+```
+HARNESS_EVENT:agent_done issue=42
+HARNESS_EVENT:skipped issue=35 pr=42 reason=open_pr
+HARNESS_EVENT:pr_created issue=42 url=https://github.com/...
+HARNESS_EVENT:merge_scheduled issue=42 pr=48
+```
+
+`SLACK_WEBHOOK_URL` などの秘密は plist に焼かず、`~/.claude-harness/env.sh` か
+nightly の `config.sh` に置きます (plist に埋めると生成時のシェルの値が固定化します)。
+
+```bash
+launchctl kickstart -p gui/$(id -u)/com.harness.nightly   # 手動で1回走らせる
+tail -f ~/.claude-harness/nightly/launchd-stdout.log
+./launchd/install.sh --uninstall                          # 解除
+```
+
 ### harness-dashboard / harness-collect-metrics — 観測
 
 ```bash
@@ -175,6 +215,8 @@ claude-dev-harness/          # このリポジトリ = 唯一の正
   lib/hook-input.sh          # フックの stdin JSON を読む
   hooks/                     # Claude Code の hooks
   skills/                    # ~/.claude/skills へ配置されるスキル
+  nightly/                   # 常時稼働マシン用のオーケストレーター
+  launchd/                   # plist テンプレートと登録スクリプト
   web/index.html             # ダッシュボード
   tests/run-tests.sh         # 依存なしの自己テスト
   setup.sh
@@ -182,6 +224,8 @@ claude-dev-harness/          # このリポジトリ = 唯一の正
 ~/.claude-harness/           # 実行時の状態（git 管理外）
   logs/                      # issue-*.log, ccx/, sessions.log, auto-commit.log
   dashboard/                 # web/ から配られる静的ファイル
+  nightly/config.sh          # nightly の設定 (マシンごとに違うので git 管理外)
+  env.sh                     # launchd 用の秘密 (任意)
   safety-allow.txt           # 任意
   safety-block.txt           # 任意
 
@@ -210,6 +254,8 @@ macOS（`/bin/bash` = 3.2 でテスト）の2本です。
 | 1件処理したら残りが打ち切られる | bash 3.2 + `set -u` の空配列展開 | 本ハーネスは配列を避けているので発生しません。旧版から移行してください |
 | `-j` を付けると CPU を焼く | bash 3.2 に `wait -n` が無く、`\|\| true` で握り潰すとビジーループになる | 同上。`harness_throttle` はポーリング + `sleep` |
 | 自動マージが効かない | `gh pr merge --auto` は保護ブランチ設定が要る | `--merge` は失敗時に即マージへフォールバックします。それも不可なら `--admin` |
+| 全 Issue がスキップされる | `gh pr list --search "linked:issue-N"` は番号を付けると全文検索に落ち、無関係な PR まで拾う | 判定はブランチ名 `agent/issue-N-` の前方一致で行う。`tests/run-tests.sh open-pr` |
+| nightly の集計が常に 0 | ログの日本語文言を grep していた | `HARNESS_EVENT:` マーカーを数える |
 | safety-guard が何も止めない | 環境変数からコマンドを読もうとしている旧版 | `setup.sh` で hooks を入れ直す。`tests/run-tests.sh safety-guard` で確認 |
 | Slack 通知が来ない | `SLACK_WEBHOOK_URL` がプレースホルダのまま | 未設定なら送信自体をスキップします。実 URL を入れてください |
 

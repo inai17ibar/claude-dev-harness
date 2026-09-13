@@ -130,6 +130,27 @@ if should_run "common"; then
   ok "harness_default_branch が Git 外でも落ちない (=${got:-空})"
 fi
 
+# ---- 既存PRの判定 --------------------------------------------------------
+group "spawn-agents — 未マージPRの検出"
+# `gh pr list --search "linked:issue-<番号>"` は番号付きだと全文検索に落ち、
+# 無関係なPRまで拾って全Issueがスキップされる。ブランチ名の前方一致で判定する。
+if should_run "open-pr"; then
+  # shellcheck disable=SC1090
+  . /dev/stdin <<< "$(sed -n '/^pr_number_for_issue/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
+  fixture='[
+    {"number":42,"headRefName":"agent/issue-35-20260910_220009"},
+    {"number":41,"headRefName":"agent/issue-25-20260910_020012"},
+    {"number":40,"headRefName":"agent/issue-32-20260910_020012"},
+    {"number":48,"headRefName":"fix/halt-dead-supabase-keepalive"}
+  ]'
+  assert_eq "42" "$(printf '%s' "$fixture" | pr_number_for_issue 35)" "自分のIssueのPRを見つける"
+  assert_eq "41" "$(printf '%s' "$fixture" | pr_number_for_issue 25)" "別のIssueのPRを取り違えない"
+  assert_eq ""   "$(printf '%s' "$fixture" | pr_number_for_issue 99)" "PRが無いIssueは空を返す"
+  # issue-3 が issue-35 のブランチに前方一致してしまわないこと
+  assert_eq ""   "$(printf '%s' "$fixture" | pr_number_for_issue 3)"  "番号の前方一致で誤爆しない"
+  assert_eq ""   "$(printf '%s' "$fixture" | pr_number_for_issue 48)" "エージェント以外のPRを拾わない"
+fi
+
 # ---- symlink 経由の呼び出し ---------------------------------------------
 group "symlink 経由で呼んでも lib を見つけられる"
 if should_run "symlink"; then
@@ -156,7 +177,8 @@ group "全スクリプトの構文チェック"
 while IFS= read -r f; do
   should_run "syntax: $f" || continue
   if bash -n "$f" 2>/dev/null; then ok "bash -n ${f#"$ROOT"/}"; else ng "bash -n ${f#"$ROOT"/}"; fi
-done < <(find "$ROOT/bin" "$ROOT/hooks" "$ROOT/lib" "$ROOT/tests" -type f -name '*.sh' 2>/dev/null | sort)
+done < <(find "$ROOT/bin" "$ROOT/hooks" "$ROOT/lib" "$ROOT/tests" "$ROOT/nightly" "$ROOT/launchd" \
+           -type f -name '*.sh' 2>/dev/null | sort)
 
 if should_run "syntax: setup.sh"; then
   if bash -n "$ROOT/setup.sh" 2>/dev/null; then ok "bash -n setup.sh"; else ng "bash -n setup.sh"; fi
@@ -172,7 +194,7 @@ if should_run "multibyte"; then
 import re, sys, pathlib
 root = pathlib.Path(sys.argv[1])
 pat = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]")
-for d in ("bin", "hooks", "lib"):
+for d in ("bin", "hooks", "lib", "nightly", "launchd"):
     for f in sorted((root / d).glob("*.sh")):
         for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
             if pat.search(line):
