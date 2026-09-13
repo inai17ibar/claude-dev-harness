@@ -51,8 +51,16 @@ $ALL_REPOS && echo "  [--all-repos — 他リポジトリの残骸も対象に�
 echo ""
 
 # ---- 1. マージ済みブランチとその worktree ------------------------------
+# git branch --merged の行頭マーカー:
+#   "* " 現在のブランチ / "+ " 他の worktree でチェックアウト中 / "  " それ以外
+# "+" を剥がし忘れると、worktree を持つブランチ === まさに掃除したいものが
+# 全部対象から外れる。
+merged_agent_branches() {
+  sed 's/^[*+] //; s/^  //' | grep -E '^(agent/|ccx/)' || true
+}
+
 echo "▼ マージ済みの agent/ccx ブランチ"
-merged=$(git branch --merged "$DEFAULT_BRANCH" 2>/dev/null | sed 's/^[* ] *//' | grep -E '^(agent/|ccx/)' || true)
+merged=$(git branch --merged "$DEFAULT_BRANCH" 2>/dev/null | merged_agent_branches)
 
 if [ -z "$merged" ]; then
   echo "  (なし)"

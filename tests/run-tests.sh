@@ -151,6 +151,24 @@ if should_run "open-pr"; then
   assert_eq ""   "$(printf '%s' "$fixture" | pr_number_for_issue 48)" "エージェント以外のPRを拾わない"
 fi
 
+# ---- worktree-clean のブランチ抽出 ---------------------------------------
+group "worktree-clean — git branch --merged の行頭マーカー"
+# "+ " は他の worktree でチェックアウト中の印。剥がし忘れると
+# worktree を持つブランチが丸ごと掃除対象から外れる。
+if should_run "merged-branches"; then
+  # shellcheck disable=SC1090
+  . /dev/stdin <<< "$(sed -n '/^merged_agent_branches/,/^}/p' "$ROOT/bin/worktree-clean.sh")"
+  fixture='* master
++ agent/issue-59-20260913_113514
+  agent/issue-1-20260620_095825
++ ccx/trial-2-20260101_000000
+  feature/not-an-agent
+  release/1.0'
+  got=$(printf '%s\n' "$fixture" | merged_agent_branches | tr '\n' ',')
+  assert_eq "agent/issue-59-20260913_113514,agent/issue-1-20260620_095825,ccx/trial-2-20260101_000000," \
+    "$got" "+ と * を剥がし、agent/ccx だけを拾う"
+fi
+
 # ---- symlink 経由の呼び出し ---------------------------------------------
 group "symlink 経由で呼んでも lib を見つけられる"
 if should_run "symlink"; then
