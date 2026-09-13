@@ -219,14 +219,31 @@ if should_run "plist"; then
     [ -f "$tpl" ] || continue
     name=$(basename "$tpl")
     if err=$(python3 - "$tpl" 2>&1 << 'PY'
-import sys, xml.dom.minidom
-src = open(sys.argv[1], encoding="utf-8").read()
+import re, sys, xml.dom.minidom
+raw = open(sys.argv[1], encoding="utf-8").read()
+
+# launchd はログインシェルの PATH を継承しない。claude は ~/.local/bin にあるので、
+# PATH に必ず含まれていないと「claude が無い」で落ちる。
+m = re.search(r"<key>PATH</key><string>([^<]*)</string>", raw)
+if not m:
+    raise SystemExit("PATH が定義されていません")
+path_tpl = m.group(1)
+if "__HOME__/.local/bin" not in path_tpl and "__BIN_DIR__" not in path_tpl:
+    raise SystemExit("PATH に ~/.local/bin が含まれていません: " + path_tpl)
+if "/opt/homebrew/bin" not in path_tpl:
+    raise SystemExit("PATH に /opt/homebrew/bin が含まれていません: " + path_tpl)
+
+# 秘密や可変な値を焼き込んでいないこと
+for forbidden in ("__CLAUDE_MODEL__", "__SLACK_WEBHOOK_URL__"):
+    if forbidden in raw:
+        raise SystemExit(f"{forbidden} を plist に埋めてはいけません")
+
+src = raw
 for ph in ("__HARNESS_ROOT__", "__HARNESS_DIR__", "__HOME__",
            "__BIN_DIR__", "__WORKTREES_BASE__"):
     src = src.replace(ph, "/tmp/x")
-if "__" in src:
-    leftover = [w for w in src.split() if w.startswith("<string>__") or "__" in w and w.count("_") >= 4]
-    raise SystemExit("未置換のプレースホルダが残っています: " + " ".join(leftover[:3]))
+if re.search(r"__[A-Z_]+__", src):
+    raise SystemExit("未置換のプレースホルダ: " + re.search(r"__[A-Z_]+__", src).group(0))
 xml.dom.minidom.parseString(src)
 PY
     ); then

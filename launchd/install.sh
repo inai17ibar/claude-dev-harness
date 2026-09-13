@@ -69,12 +69,40 @@ if $UNINSTALL; then
   exit 0
 fi
 
-# CLI が PATH にあるか (launchd はログインシェルの PATH を継承しない)
+# launchd はログインシェルの PATH を継承しないので、plist に明示する。
+#
+# 「spawn-agents が置いてあるディレクトリ」ではなく
+# 「このリポジトリを指すシンボリックリンクがあるディレクトリ」を探す。
+# 旧版の実体ファイルが /usr/local/bin に残っていると、単なる -x 判定では
+# そちらを掴んでしまい、launchd だけ古い spawn-agents を呼ぶ状態になる。
 BIN_DIR=""
-for d in /usr/local/bin "$HOME/.local/bin"; do
-  [ -x "$d/spawn-agents" ] && { BIN_DIR="$d"; break; }
+for d in "$HOME/.local/bin" /usr/local/bin; do
+  link=$(readlink "$d/spawn-agents" 2>/dev/null || true)
+  case "$link" in
+    "$HARNESS_ROOT"/*) BIN_DIR="$d"; break ;;
+  esac
 done
-[ -n "$BIN_DIR" ] || harness_die "spawn-agents が見つかりません。先に ./setup.sh を実行してください"
+
+if [ -z "$BIN_DIR" ]; then
+  for d in "$HOME/.local/bin" /usr/local/bin; do
+    if [ -x "$d/spawn-agents" ]; then
+      echo "⚠️  $d/spawn-agents はこのリポジトリを指していません。" >&2
+      echo "    先に ./setup.sh を実行してください。" >&2
+      break
+    fi
+  done
+  harness_die "このリポジトリにリンクされた spawn-agents が見つかりません"
+fi
+echo "🔗 launchd に渡す PATH の先頭: $BIN_DIR"
+
+# 旧版の実体が残っていると呼び出し経路によって二重管理になる
+for d in /usr/local/bin "$HOME/.local/bin"; do
+  [ "$d" = "$BIN_DIR" ] && continue
+  if [ -e "$d/spawn-agents" ] && [ ! -L "$d/spawn-agents" ]; then
+    echo "⚠️  旧版の実体が残っています: $d/spawn-agents"
+    echo "    消しておくことを勧めます: sudo rm -f $d/{spawn-agents,ccx-run,worktree-clean,harness-collect-metrics,harness-dashboard}"
+  fi
+done
 
 CONFIG_FILE="$HARNESS_DIR/nightly/config.sh"
 if [ ! -f "$CONFIG_FILE" ]; then
