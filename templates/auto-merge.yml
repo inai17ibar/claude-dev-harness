@@ -19,6 +19,10 @@ on:
 permissions:
   pull-requests: write
   contents: write
+  # auto-merge を有効化したトークンが「Closes #N」で Issue を閉じる。
+  # これが無いと、マージされても Issue が開いたまま残り、
+  # nightly が毎回「解決済みの Issue」にエージェントを起動してしまう。
+  issues: write
 
 jobs:
   auto-merge:

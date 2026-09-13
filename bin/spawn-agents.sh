@@ -179,16 +179,17 @@ has_open_pr() {
 #
 # 詰まりが直って CI が緑になると auto-merge がそのままマージするので、
 # open PR を見て回る clear_needs_attention は走らない。印を残したままだと
-# label:needs-attention の検索が信用できなくなる。1実行につき1回だけ掃く。
+# ラベル検索が信用できなくなる。1実行につき1回だけ掃く。
 sweep_stale_attention_labels() {
-  local nums
-  nums=$(gh pr list --state closed --limit 30 --label "$NEEDS_ATTENTION_LABEL" \
-    --json number -q '.[].number' 2>/dev/null) || return 0
-  [ -n "$nums" ] || return 0
-  local n
-  for n in $nums; do
-    gh pr edit "$n" --remove-label "$NEEDS_ATTENTION_LABEL" >/dev/null 2>&1 \
-      && harness_log "🏷️  閉じた PR #${n} から ${NEEDS_ATTENTION_LABEL} を外しました" || true
+  local label nums n
+  for label in "$NEEDS_ATTENTION_LABEL" "$REVIEW_LABEL"; do
+    nums=$(gh pr list --state closed --limit 30 --label "$label" \
+      --json number -q '.[].number' 2>/dev/null) || continue
+    [ -n "$nums" ] || continue
+    for n in $nums; do
+      gh pr edit "$n" --remove-label "$label" >/dev/null 2>&1 \
+        && harness_log "🏷️  閉じた PR #${n} から ${label} を外しました" || true
+    done
   done
 }
 
