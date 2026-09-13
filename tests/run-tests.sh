@@ -197,9 +197,15 @@ if should_run "event-contract"; then
   # shellcheck disable=SC1090
   . /dev/stdin <<< "$(sed -n '/^emit()/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
 
-  line=$(emit skipped "issue=59" "pr=42" "reason=open_pr" "pr_state=stuck" "detail=ci_failed:test")
-  assert_eq "HARNESS_EVENT:skipped issue=59 pr=42 reason=open_pr pr_state=stuck detail=ci_failed:test" \
+  line=$(emit skipped "issue=59" "pr=42" "reason=open_pr" "pr_state=stuck" "detail=ci_failed:test" "flagged=0")
+  assert_eq "HARNESS_EVENT:skipped issue=59 pr=42 reason=open_pr pr_state=stuck detail=ci_failed:test flagged=0" \
     "$line" "emit の出力形式"
+
+  # 通知は「新規の詰まり」だけ。既に印が付いていれば鳴らさない。
+  old_line=$(emit skipped "issue=60" "pr=43" "reason=open_pr" "pr_state=stuck" "detail=conflict" "flagged=1")
+  both=$(printf '%s\n%s\n' "$line" "$old_line")
+  assert_eq "2" "$(printf '%s' "$both" | grep -c 'pr_state=stuck')" "詰まりは2件とも数える"
+  assert_eq "1" "$(printf '%s' "$both" | grep -c 'pr_state=stuck .*flagged=0')" "通知対象は新規の1件だけ"
 
   # nightly-run.sh が使っているのと同じ grep / sed をソースから抜き出して当てる
   grep_stuck=$(printf '%s\n' "$line" | grep -c "^HARNESS_EVENT:skipped .*pr_state=stuck")

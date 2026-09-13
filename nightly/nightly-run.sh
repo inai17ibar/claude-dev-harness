@@ -240,7 +240,11 @@ failed=$(count_event failed)
 # 同じ「スキップ」に丸めると、詰まっていることに誰も気づけない。
 skipped_waiting=$(count_matching "^HARNESS_EVENT:skipped .*pr_state=waiting")
 skipped_stuck=$(count_matching "^HARNESS_EVENT:skipped .*pr_state=stuck")
+# 今回はじめて見つかった詰まり。既に印が付いているものは通知しない。
+stuck_new=$(count_matching "^HARNESS_EVENT:skipped .*pr_state=stuck .*flagged=0")
 stuck_list=$(grep "^HARNESS_EVENT:skipped .*pr_state=stuck" "$RUN_LOG" 2>/dev/null \
+  | sed -E 's/.*issue=([0-9]+) pr=([0-9]+).*detail=([^ ]*).*/  #\1 → PR #\2 (\3)/' || true)
+stuck_new_list=$(grep "^HARNESS_EVENT:skipped .*pr_state=stuck .*flagged=0" "$RUN_LOG" 2>/dev/null \
   | sed -E 's/.*issue=([0-9]+) pr=([0-9]+).*detail=([^ ]*).*/  #\1 → PR #\2 (\3)/' || true)
 
 cat > "$SUMMARY_FILE" << EOF
@@ -251,7 +255,7 @@ cat > "$SUMMARY_FILE" << EOF
   完了: ${done_count}
   タイムアウト: ${timeout_count}
   スキップ(レビュー待ち): ${skipped_waiting}
-  詰まり(要対応): ${skipped_stuck}
+  詰まり(要対応): ${skipped_stuck}${stuck_new:+ (うち新規 ${stuck_new})}
   失敗: ${failed}
 PR作成: ${pr_created}
 マージ予約: ${merge_scheduled}
@@ -268,8 +272,8 @@ cat "$SUMMARY_FILE"
 # 通知は「人が動く必要があるとき」だけ鳴らす。
 # 毎回鳴らすと見なくなり、肝心のときに気づけない。
 notify_lines=""
-[ "$skipped_stuck" -gt 0 ] && notify_lines="${notify_lines}🛑 詰まっている PR が ${skipped_stuck} 件
-${stuck_list}
+[ "$stuck_new" -gt 0 ] && notify_lines="${notify_lines}🛑 詰まっている PR が ${stuck_new} 件
+${stuck_new_list}
 "
 [ "$timeout_count" -gt 0 ] && notify_lines="${notify_lines}⏱️ タイムアウトしたエージェント ${timeout_count} 件
 "
@@ -280,11 +284,15 @@ if [ -n "$notify_lines" ]; then
   log ""
   log "📨 通知送信 (要対応あり)"
   prio="default"
-  [ "$skipped_stuck" -gt 0 ] && prio="high"
+  [ "$stuck_new" -gt 0 ] && prio="high"
   notify "$notify_lines
 ログ: $RUN_LOG" "$prio"
 else
-  log "📭 要対応なし。通知はしません"
+  if [ "$skipped_stuck" -gt 0 ]; then
+    log "📭 詰まりは ${skipped_stuck} 件あるが、いずれも通知済み。鳴らしません"
+  else
+    log "📭 要対応なし。通知はしません"
+  fi
 fi
 
 # 1件も進まず失敗だけがある場合を failed とする。

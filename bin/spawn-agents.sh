@@ -36,6 +36,8 @@ usage() {
   -b, --base BRANCH    ベースブランチ (既定: リポジトリの既定ブランチ)
   -t, --timeout SEC    1エージェントの上限秒数 (既定: ${AGENT_TIMEOUT}、0で無制限)
   -f, --force          未マージ PR がある Issue も再実装する
+      --no-review      PR 作成後の自動レビューを行わない
+      --review-model M レビューに使うモデル (既定: 実装と同じ)
   -d, --dry-run        実行計画だけ表示する
   -h, --help           このヘルプ
 
@@ -43,6 +45,7 @@ usage() {
   CLAUDE_MODEL         モデル (既定 claude-opus-5)
   MAX_PARALLEL         並行数の上限 (既定 3)
   AGENT_TIMEOUT        1エージェントの上限秒数 (既定 3600、0で無制限)
+  HARNESS_REVIEW_MODEL レビューに使うモデル (既定: 実装と同じ)
   WORKTREES_BASE       worktree の置き場所 (既定 ~/worktrees)
   CLAUDE_HARNESS_DIR   ログの親ディレクトリ (既定 ~/.claude-harness)
 
@@ -62,6 +65,8 @@ AUTO_PR=false
 AUTO_MERGE=false
 ADMIN_MERGE=false
 FORCE=false
+DO_REVIEW=true
+REVIEW_MODEL="${HARNESS_REVIEW_MODEL:-}"
 BASE_BRANCH=""
 OPEN_PR_NUM=""
 OPEN_PR_STATE=""
@@ -81,6 +86,8 @@ while [ $# -gt 0 ]; do
     -b|--base)    BASE_BRANCH="${2:-}"; shift 2 ;;
     -t|--timeout) AGENT_TIMEOUT="${2:-}"; shift 2 ;;
     -f|--force)   FORCE=true; shift ;;
+    --no-review)  DO_REVIEW=false; shift ;;
+    --review-model) REVIEW_MODEL="${2:-}"; shift 2 ;;
     -d|--dry-run) DRY_RUN=true; shift ;;
     -h|--help)    usage; exit 0 ;;
     [0-9]*)       ISSUES="$ISSUES $1"; shift ;;
@@ -161,6 +168,23 @@ has_open_pr() {
   OPEN_PR_DETAIL=$(printf '%s' "$info" | cut -f3)
   OPEN_PR_FLAGGED=$(printf '%s' "$info" | cut -f4)
   return 0
+}
+
+# 閉じた PR に残った印を落とす。
+#
+# 詰まりが直って CI が緑になると auto-merge がそのままマージするので、
+# open PR を見て回る clear_needs_attention は走らない。印を残したままだと
+# label:needs-attention の検索が信用できなくなる。1実行につき1回だけ掃く。
+sweep_stale_attention_labels() {
+  local nums
+  nums=$(gh pr list --state closed --limit 30 --label "$NEEDS_ATTENTION_LABEL" \
+    --json number -q '.[].number' 2>/dev/null) || return 0
+  [ -n "$nums" ] || return 0
+  local n
+  for n in $nums; do
+    gh pr edit "$n" --remove-label "$NEEDS_ATTENTION_LABEL" >/dev/null 2>&1 \
+      && harness_log "🏷️  閉じた PR #${n} から ${NEEDS_ATTENTION_LABEL} を外しました" || true
+  done
 }
 
 # 詰まった PR に印を付ける。
@@ -299,9 +323,15 @@ create_pr() {
   harness_log "✅ Issue #${issue}: PR 作成 ${pr_url##*$'\n'}"
   emit pr_created "issue=$issue" "url=${pr_url##*$'\n'}"
 
+  pr_num=$(printf '%s' "$pr_url" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
+
+  # レビューは CI と並行に走らせる。マージ判断はブロックしない。
+  if $DO_REVIEW && [ -n "$pr_num" ]; then
+    review_pr "$issue" "$worktree" "$pr_num" || true
+  fi
+
   $AUTO_MERGE || return 0
 
-  pr_num=$(printf '%s' "$pr_url" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
   [ -n "$pr_num" ] || { harness_log "⚠️  Issue #${issue}: PR 番号を取れず自動マージをスキップ"; return 1; }
 
   if $ADMIN_MERGE; then
@@ -345,6 +375,125 @@ run_agent() {
   )
 }
 
+# PR を作ったあとに自動レビューを走らせ、指摘を PR にコメントする。
+# CI とは別物。CI は「動くか」を見るが、これは「この直し方でよいか」を見る。
+# マージはブロックしない (人が読んで判断する材料を置くだけ)。
+#
+# レビュアーは worktree の中で動かす。差分だけ渡すより周辺のコードを
+# 読めたほうが精度が上がるため。ただし読むだけのはずなので、
+# 終わったあとに worktree が変わっていないことを必ず確かめる。
+review_pr() {
+  local issue=$1 worktree=$2 pr_num=$3
+  local model="${REVIEW_MODEL:-$CLAUDE_MODEL}"
+  local prompt_file="${LOG_DIR}/review-prompt-${issue}-${TIMESTAMP}.txt"
+  local out_file="${LOG_DIR}/review-${issue}-${TIMESTAMP}.md"
+  local diff_file="${LOG_DIR}/review-diff-${issue}-${TIMESTAMP}.diff"
+
+  git -C "$worktree" diff "$BASE_BRANCH"...HEAD > "$diff_file" 2>/dev/null || true
+  if [ ! -s "$diff_file" ]; then
+    harness_log "   ℹ️  Issue #${issue}: 差分が無いのでレビューをスキップ"
+    return 0
+  fi
+
+  local lines
+  lines=$(wc -l < "$diff_file" | tr -d ' ')
+  local truncated=""
+  if [ "$lines" -gt 2000 ]; then
+    head -2000 "$diff_file" > "${diff_file}.head" && mv "${diff_file}.head" "$diff_file"
+    truncated="（差分が大きいため先頭2000行のみ）"
+  fi
+
+  {
+    cat << 'PROMPT'
+このリポジトリで、あるエージェントが Issue を解決する変更を書きました。
+その変更をレビューしてください。
+
+## 出し方
+
+1行目に必ず次のどちらかを書いてください。
+
+  REVIEW: 指摘なし
+  REVIEW: 要確認 <件数>件
+
+2行目以降に、指摘があれば箇条書きで書いてください。1件につき
+「どのファイルの何が、なぜ問題か」を1〜2行で。修正案は不要です。
+
+## 見るところ
+
+- 仕様と実装のズレ。テストは通るが Issue の意図を満たしていない、など
+- 境界条件の取りこぼし（0・負数・空・null・オーバーフロー）
+- 既存コードの規約や書き方から外れているところ
+- 明らかに危ないもの（認可の抜け、秘密の直書き、注入の余地）
+
+## 見なくてよいところ
+
+- 好みの問題、命名の細かい趣味
+- フォーマッタが直すような整形
+- テストが通っているかどうか（CI が別に見ています）
+
+指摘が思いつかなければ、無理に絞り出さず「指摘なし」と書いてください。
+水増しされた指摘は、本物の指摘を見えなくします。
+
+## 制約
+
+**読むだけです。ファイルを一切変更しないでください。**
+コミットもしないでください。
+
+## 変更内容
+PROMPT
+    printf '%s\n\n```diff\n' "$truncated"
+    cat "$diff_file"
+    printf '```\n'
+  } > "$prompt_file"
+
+  harness_log "   🔍 Issue #${issue}: レビュー中 (model=$model)"
+  if ! harness_run_with_timeout 900 \
+      review_agent "$worktree" "$prompt_file" "$out_file"; then
+    harness_log "   ⚠️  Issue #${issue}: レビューが完了しませんでした"
+    return 1
+  fi
+
+  # 読むだけのはずなので、変わっていたら戻す
+  if ! git -C "$worktree" diff --quiet 2>/dev/null \
+    || [ -n "$(git -C "$worktree" ls-files --others --exclude-standard)" ]; then
+    harness_log "   ⚠️  Issue #${issue}: レビューがファイルを変更したので元に戻します"
+    git -C "$worktree" checkout -- . >/dev/null 2>&1 || true
+    git -C "$worktree" clean -fd >/dev/null 2>&1 || true
+  fi
+
+  [ -s "$out_file" ] || { harness_log "   ⚠️  Issue #${issue}: レビュー結果が空です"; return 1; }
+
+  local headline findings
+  headline=$(head -1 "$out_file")
+  case "$headline" in
+    *指摘なし*) findings=0 ;;
+    *要確認*)   findings=$(printf '%s' "$headline" | grep -oE '[0-9]+' | head -1) ;;
+    *)          findings="?" ;;
+  esac
+
+  gh pr comment "$pr_num" --body "## 🔍 自動レビュー
+
+$(cat "$out_file")
+
+<sub>Claude Dev Harness が PR 作成時に自動で実行しました（model: \`${model}\`）。
+CI とは別物で、マージはブロックしません。見当違いの指摘は無視してください。</sub>" >/dev/null 2>&1 \
+    && harness_log "   ✅ Issue #${issue}: レビューを PR #${pr_num} にコメント (${findings})" \
+    || harness_log "   ⚠️  Issue #${issue}: レビューのコメント投稿に失敗"
+
+  emit reviewed "issue=$issue" "pr=$pr_num" "findings=${findings:-0}"
+  return 0
+}
+
+# harness_run_with_timeout から呼べるよう関数にする
+review_agent() {
+  local worktree=$1 prompt_file=$2 out_file=$3
+  (
+    cd "$worktree" || exit 1
+    claude -p --dangerously-skip-permissions --model "${REVIEW_MODEL:-$CLAUDE_MODEL}" \
+      < "$prompt_file" > "$out_file" 2>/dev/null
+  )
+}
+
 run_one() {
   local issue=$1 issue_json title worktree log_file prompt_file rc
 
@@ -356,8 +505,11 @@ run_one() {
       harness_log "⏭️  Issue #${issue}: 未マージの PR #${OPEN_PR_NUM} があるためスキップ (${OPEN_PR_DETAIL})"
       [ "$OPEN_PR_FLAGGED" = "1" ] && clear_needs_attention "$OPEN_PR_NUM"
     fi
+    # flagged は「この実行より前から印が付いていたか」。
+    # 通知はこれが 0 のとき (=新しく見つかったとき) だけ鳴らす。
+    # 毎回鳴らすと、直すまでの間ずっと同じ通知が届いて見なくなる。
     emit skipped "issue=$issue" "pr=$OPEN_PR_NUM" "reason=open_pr" \
-      "pr_state=$OPEN_PR_STATE" "detail=$OPEN_PR_DETAIL"
+      "pr_state=$OPEN_PR_STATE" "detail=$OPEN_PR_DETAIL" "flagged=$OPEN_PR_FLAGGED"
     return 0
   fi
 
@@ -457,6 +609,9 @@ run_tmux() {
 
 # shellcheck disable=SC2086
 set -- $ISSUE_LIST
+
+$DRY_RUN || sweep_stale_attention_labels
+
 case "$MODE" in
   parallel)   run_parallel "$@" ;;
   sequential) MAX_PARALLEL=1; run_parallel "$@" ;;
