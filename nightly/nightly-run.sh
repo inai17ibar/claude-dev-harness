@@ -88,13 +88,28 @@ if command -v pmset >/dev/null 2>&1; then
 fi
 log "  ✅ 電源OK"
 
-if ! ping -c 1 -W 2000 api.github.com >/dev/null 2>&1; then
-  log "❌ ネット接続なし (api.github.com 到達不可)"
+# ICMP を塞ぐネットワークがあるうえ、スリープ復帰直後は経路がまだ立っていない
+# ことがある (2026-09-13 12:00 の実行が ping 失敗で中断した)。
+# 実際に使う HTTPS で確かめ、数回リトライする。
+net_ok=false
+for attempt in 1 2 3; do
+  if curl -sS -o /dev/null --max-time 10 https://api.github.com 2>/dev/null; then
+    net_ok=true
+    break
+  fi
+  if [ "$attempt" -lt 3 ]; then
+    log "  ⏳ api.github.com に到達できない (試行 ${attempt}/3)。10秒待って再試行"
+    sleep 10
+  fi
+done
+if ! $net_ok; then
+  log "❌ ネット接続なし (api.github.com に到達できない)"
+  notify "🌐 Nightly中止: ネット未接続"
   exit 3
 fi
 log "  ✅ ネット接続OK"
 
-for cmd in gh spawn-agents claude jq git; do
+for cmd in gh spawn-agents claude jq git curl; do
   command -v "$cmd" >/dev/null 2>&1 || { log "❌ 必須コマンドなし: $cmd"; exit 4; }
 done
 log "  ✅ 必須コマンド揃っている"
