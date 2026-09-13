@@ -10,6 +10,16 @@ PASS=0
 FAIL=0
 FAILED_NAMES=""
 
+# どの bash で走っているかを必ず出す。
+# macOS で `bash` と打つと Homebrew の 5 系を引くことがあり、
+# 3.2 互換を謳いながら 5 でしか検証していない、という取り違えが起きる。
+# 本番の実行系は /bin/bash (3.2) なので、そちらと違えば警告する。
+printf '\033[2mbash %s (%s)\033[0m\n' "${BASH_VERSION}" "${BASH:-?}"
+case "${BASH_VERSION}" in
+  3.2*) ;;
+  *) printf '\033[33m⚠️  /bin/bash は 3.2 です。本番と同じ処理系で確かめるなら:\033[0m\n     /bin/bash %s\n' "$0" ;;
+esac
+
 ok()   { PASS=$((PASS + 1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
 ng()   { FAIL=$((FAIL + 1)); FAILED_NAMES="$FAILED_NAMES\n  - $1"; printf '  \033[31m✗\033[0m %s\n' "$1"; }
 group() { printf '\n\033[1m%s\033[0m\n' "$1"; }
