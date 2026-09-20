@@ -299,8 +299,8 @@ group "全スクリプトの構文チェック"
 while IFS= read -r f; do
   should_run "syntax: $f" || continue
   if bash -n "$f" 2>/dev/null; then ok "bash -n ${f#"$ROOT"/}"; else ng "bash -n ${f#"$ROOT"/}"; fi
-done < <(find "$ROOT/bin" "$ROOT/hooks" "$ROOT/lib" "$ROOT/tests" "$ROOT/nightly" "$ROOT/launchd" \
-           -type f -name '*.sh' 2>/dev/null | sort)
+done < <(find "$ROOT/bin" "$ROOT/hooks" "$ROOT/lib" "$ROOT/tests" "$ROOT/nightly" \
+           "$ROOT/launchd" "$ROOT/skills" -type f -name '*.sh' 2>/dev/null | sort)
 
 if should_run "syntax: setup.sh"; then
   if bash -n "$ROOT/setup.sh" 2>/dev/null; then ok "bash -n setup.sh"; else ng "bash -n setup.sh"; fi

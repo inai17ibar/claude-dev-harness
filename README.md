@@ -209,6 +209,26 @@ harness-collect-metrics | jq . # JSON で取得
 harness-collect-metrics | jq .summary.success_rate
 ```
 
+## idea → automation の受け渡し
+
+夜間ジョブは `automation` ラベルの付いた Issue しか触りません。**ラベルが付くまで
+何も起きない**のがこの設計の要で、逆に言うと選別が滞るとジョブは毎晩空振りします
+（実際に8日間そうなっていました）。
+
+| 段階 | 手段 |
+|---|---|
+| 思いつきを記録する | `idea` スキル。1行言うだけで `idea` ラベルの Issue になる |
+| 機械が探す | `weekly-audit`。土 7:00 に監査して `idea` を起票する |
+| **選ぶ** | **`idea-triage` スキル。「選別して」で一覧を出し、番号で選ぶ** |
+| 実装する | nightly / `spawn-agents` |
+
+選別で見るのは3点です。`skills/idea-triage/scripts/backlog.sh` が一覧に出します。
+
+- **本文の薄さ** — エージェントは Issue 本文だけを仕様として読みます。`idea` スキルは
+  思考を止めないため本文を空で登録するので、薄いものは流す前に本文を書く必要があります
+- **未マージ PR の有無** — あるとラベルを付けても nightly はスキップします
+- **古さ** — 大きな移行を挟んでいると前提が変わっています
+
 ## Hooks
 
 `setup.sh` が `~/.claude/settings.json` に登録します。

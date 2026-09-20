@@ -21,7 +21,7 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -x -S warning setup.sh lib/*.sh hooks/*.sh bin/*.sh \
-            tests/*.sh nightly/*.sh launchd/*.sh
+            tests/*.sh nightly/*.sh launchd/*.sh skills/*/scripts/*.sh
 
       - name: 自己テスト
         run: tests/run-tests.sh
