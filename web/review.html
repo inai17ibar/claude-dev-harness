@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness Review</title>
+<style>
+  :root {
+    --ground: #eef1f2; --surface: #fff; --surface-2: #f6f8f9;
+    --ink: #101519; --ink-muted: #56646d; --ink-faint: #7d8b94;
+    --border: #d3dade; --border-soft: #e3e9ec;
+    --act: #0d6a6a; --act-bg: #e2efee;
+    --warn: #a5561b; --warn-bg: #f6eae0;
+    --stop: #a3342b; --stop-bg: #f7e6e4;
+    --ok: #1f7a4d; --ok-bg: #e4f1ea;
+    --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0e1316; --surface: #161d21; --surface-2: #1b2429;
+      --ink: #e3eaee; --ink-muted: #94a4ae; --ink-faint: #74848e;
+      --border: #28333a; --border-soft: #212b31;
+      --act: #52b8b0; --act-bg: #10302f;
+      --warn: #d68e52; --warn-bg: #33220f;
+      --stop: #e0736a; --stop-bg: #331a17;
+      --ok: #4fb87e; --ok-bg: #12301f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink);
+         font-family: var(--sans); font-size: 15px; line-height: 1.65; }
+  .wrap { max-width: 980px; margin: 0 auto; padding-inline: 18px; padding-block: 28px 64px; }
+
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .nav a { color: var(--act); text-decoration: none; font-size: 13px; }
+  .nav a:hover { text-decoration: underline; }
+  .meta { color: var(--ink-faint); font-size: 12.5px; font-family: var(--mono); margin-left: auto; }
+
+  button { font-family: inherit; font-size: 13px; border-radius: 5px; cursor: pointer;
+           border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+           padding: 5px 11px; }
+  button:hover:not(:disabled) { border-color: var(--act); color: var(--act); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--act); outline-offset: 2px; }
+  button.primary { background: var(--act-bg); border-color: var(--act); color: var(--act); font-weight: 600; }
+  button.danger:hover:not(:disabled) { border-color: var(--stop); color: var(--stop); }
+
+  h2 { font-size: 14px; margin: 30px 0 10px; letter-spacing: .04em; text-transform: uppercase;
+       color: var(--ink-faint); display: flex; align-items: center; gap: 9px; }
+  h2 .count { font-family: var(--mono); font-size: 12px; background: var(--surface-2);
+              border: 1px solid var(--border-soft); border-radius: 10px; padding: 0 8px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+          padding: 14px 16px; margin-bottom: 10px; }
+  .card.flag { border-left: 3px solid var(--warn); }
+  .card.stop { border-left: 3px solid var(--stop); }
+
+  .row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .num { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); white-space: nowrap; }
+  .title { flex: 1; min-width: 240px; font-weight: 600; }
+  .repo { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+
+  .tag { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 3px; white-space: nowrap; }
+  .t-warn { background: var(--warn-bg); color: var(--warn); }
+  .t-stop { background: var(--stop-bg); color: var(--stop); }
+  .t-ok { background: var(--ok-bg); color: var(--ok); }
+  .t-dim { background: var(--surface-2); color: var(--ink-faint); }
+
+  .actions { display: flex; gap: 7px; margin-top: 11px; flex-wrap: wrap; align-items: center; }
+  .actions a { font-size: 12.5px; color: var(--ink-faint); text-decoration: none; margin-left: auto; }
+  .actions a:hover { color: var(--act); text-decoration: underline; }
+
+  details { margin-top: 10px; }
+  summary { cursor: pointer; font-size: 13px; color: var(--act); }
+  details pre { background: var(--surface-2); border: 1px solid var(--border-soft);
+                border-radius: 5px; padding: 11px 13px; margin: 8px 0 0;
+                white-space: pre-wrap; word-break: break-word;
+                font-family: var(--mono); font-size: 12.5px; line-height: 1.7; }
+
+  .note { font-size: 12.5px; margin-top: 9px; padding: 7px 10px; border-radius: 4px; display: none; }
+  .note.ok { display: block; background: var(--ok-bg); color: var(--ok); }
+  .note.ng { display: block; background: var(--stop-bg); color: var(--stop); }
+
+  .empty { color: var(--ink-faint); font-size: 14px; padding: 12px 2px; }
+  .status { padding: 30px 2px; color: var(--ink-muted); }
+
+  .backlog .card { padding: 10px 14px; }
+  .backlog .row { gap: 9px; }
+  .age { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Harness Review</h1>
+    <span class="nav"><a href="/">メトリクス →</a></span>
+    <span class="meta" id="meta"></span>
+  </header>
+  <div class="row" style="margin-bottom:8px">
+    <button id="reload">再読み込み</button>
+    <span class="meta" id="repos"></span>
+  </div>
+
+  <div id="status" class="status">読み込み中…</div>
+  <div id="board" hidden>
+    <h2>要対応 <span class="count" id="c-action">0</span></h2>
+    <div id="needs"></div>
+
+    <h2>レビュー待ち <span class="count" id="c-wait">0</span></h2>
+    <div id="waiting"></div>
+
+    <h2>バックログ <span class="count" id="c-backlog">0</span></h2>
+    <div id="backlog" class="backlog"></div>
+  </div>
+
+</div>
+
+<script>
+const TOKEN = "__UI_TOKEN__";
+const $ = (id) => document.getElementById(id);
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+const STATE_TAG = {
+  conflict:   ["t-stop", "コンフリクト"],
+  ci_failed:  ["t-stop", "CI失敗"],
+  ci_running: ["t-dim",  "CI実行中"],
+  ready:      ["t-ok",   "CI通過"],
+};
+
+async function act(btn, action, repo, number, note, confirmText) {
+  if (confirmText && !confirm(confirmText)) return;
+  const siblings = btn.parentElement.querySelectorAll("button");
+  siblings.forEach((b) => (b.disabled = true));
+  note.className = "note";
+  try {
+    const res = await fetch("/api/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Harness-Token": TOKEN },
+      body: JSON.stringify({ action, repo, number }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      note.className = "note ok";
+      note.textContent = "完了しました。再読み込みします…";
+      setTimeout(load, 900);
+    } else {
+      note.className = "note ng";
+      note.textContent = data.error || "失敗しました";
+      siblings.forEach((b) => (b.disabled = false));
+    }
+  } catch (e) {
+    note.className = "note ng";
+    note.textContent = "通信に失敗しました: " + e.message;
+    siblings.forEach((b) => (b.disabled = false));
+  }
+}
+
+function prCard(pr) {
+  const card = el("div", "card" + (pr.has_findings ? " flag"
+    : (pr.state === "ci_failed" || pr.state === "conflict") ? " stop" : ""));
+
+  const row = el("div", "row");
+  row.append(el("span", "num", "#" + pr.number));
+  row.append(el("span", "title", pr.title));
+  row.append(el("span", "repo", pr.repo.split("/")[1]));
+  const [cls, label] = STATE_TAG[pr.state] || ["t-dim", pr.state];
+  row.append(el("span", "tag " + cls, label));
+  if (pr.has_findings) row.append(el("span", "tag t-warn", "レビュー指摘あり"));
+  if (pr.flagged) row.append(el("span", "tag t-stop", "要対応"));
+  card.append(row);
+
+  if (pr.review) {
+    const d = el("details");
+    d.append(el("summary", null, "レビュー全文を見る"));
+    d.append(el("pre", null, pr.review));
+    card.append(d);
+  }
+
+  const note = el("div", "note");
+  const acts = el("div", "actions");
+
+  if (pr.has_findings) {
+    const b = el("button", "primary", "承認（指摘を了承）");
+    b.title = "review-findings ラベルを外します。自動マージが設定されていれば再開します";
+    b.onclick = () => act(b, "approve", pr.repo, pr.number, note);
+    acts.append(b);
+  }
+
+  const m = el("button", pr.state === "ready" && !pr.has_findings ? "primary" : "");
+  m.textContent = "マージ";
+  m.disabled = pr.state === "conflict";
+  m.onclick = () => act(m, "merge", pr.repo, pr.number, note,
+    "PR #" + pr.number + " をマージします。よろしいですか？");
+  acts.append(m);
+
+  const link = el("a", null, "GitHub で開く");
+  link.href = pr.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  acts.append(link);
+
+  card.append(acts);
+  card.append(note);
+  return card;
+}
+
+function ideaCard(it) {
+  const card = el("div", "card");
+  const row = el("div", "row");
+  row.append(el("span", "num", "#" + it.number));
+  row.append(el("span", "title", it.title));
+  row.append(el("span", "repo", it.repo.split("/")[1]));
+  row.append(el("span", "age", it.age_days + "d"));
+  if (it.body_len < 120) row.append(el("span", "tag t-warn", "本文薄"));
+  if (it.age_days > 30) row.append(el("span", "tag t-dim", "古い"));
+  if (it.promoted) row.append(el("span", "tag t-ok", "流し済み"));
+  card.append(row);
+
+  const note = el("div", "note");
+  const acts = el("div", "actions");
+
+  if (it.promoted) {
+    const b = el("button", "", "取り消す");
+    b.onclick = () => act(b, "demote", it.repo, it.number, note);
+    acts.append(b);
+  } else {
+    const b = el("button", "primary", "流す");
+    b.title = "automation ラベルを付けます。次の夜間ジョブが実装します";
+    const warn = it.body_len < 120
+      ? "この Issue は本文が " + it.body_len + " 字しかありません。エージェントは本文だけを仕様として読むため、このまま流すと手がかりが足りません。続けますか？"
+      : null;
+    b.onclick = () => act(b, "promote", it.repo, it.number, note, warn);
+    acts.append(b);
+  }
+
+  const link = el("a", null, "GitHub で開く");
+  link.href = it.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  acts.append(link);
+
+  card.append(acts);
+  card.append(note);
+  return card;
+}
+
+function fill(container, items, render, emptyText) {
+  container.replaceChildren();
+  if (!items.length) {
+    container.append(el("div", "empty", emptyText));
+    return;
+  }
+  items.forEach((it) => container.append(render(it)));
+}
+
+async function load() {
+  $("status").textContent = "読み込み中…（GitHub に問い合わせています）";
+  $("status").hidden = false;
+  $("board").hidden = true;
+  try {
+    const res = await fetch("/api/review");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "取得に失敗しました");
+
+    const needs = data.prs.filter((p) => p.has_findings || p.flagged
+      || p.state === "ci_failed" || p.state === "conflict");
+    const waiting = data.prs.filter((p) => !needs.includes(p));
+    const backlog = data.backlog
+      .slice()
+      .sort((a, b) => (a.promoted - b.promoted) || (a.age_days - b.age_days));
+
+    fill($("needs"), needs, prCard, "要対応の PR はありません。");
+    fill($("waiting"), waiting, prCard, "レビュー待ちの PR はありません。");
+    fill($("backlog"), backlog, ideaCard, "idea ラベルの Issue はありません。");
+
+    $("c-action").textContent = needs.length;
+    $("c-wait").textContent = waiting.length;
+    $("c-backlog").textContent = backlog.length;
+    $("repos").textContent = data.repos.join("  ");
+    $("meta").textContent = "取得 " + data.generated.replace("T", " ").replace("Z", " UTC");
+
+    $("status").hidden = true;
+    $("board").hidden = false;
+  } catch (e) {
+    $("status").textContent = "エラー: " + e.message;
+  }
+}
+
+$("reload").onclick = load;
+load();
+</script>
+</body>
+</html>

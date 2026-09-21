@@ -201,13 +201,36 @@ tail -f ~/.claude-harness/nightly/launchd-stdout.log
 ./launchd/install.sh --uninstall                          # 解除
 ```
 
-### harness-dashboard / harness-collect-metrics — 観測
+### harness-dashboard — 観測とレビュー
 
 ```bash
 harness-dashboard              # http://localhost:8765
-harness-collect-metrics | jq . # JSON で取得
-harness-collect-metrics | jq .summary.success_rate
+harness-collect-metrics | jq .summary
 ```
+
+| URL | 中身 |
+|---|---|
+| `/` | 実行数・成功率・最近の実行ログ |
+| `/review` | **レビュー画面。** 要対応の PR / レビュー待ち / idea バックログを一覧し、画面から操作できる |
+
+レビュー画面からできる操作は4つだけです。
+
+| ボタン | 中身 |
+|---|---|
+| 承認（指摘を了承） | `review-findings` を外す。自動マージが設定されていれば再開する |
+| マージ | `gh pr merge --merge --delete-branch` |
+| 流す | idea に `automation` を付ける。本文が薄いものは確認を挟む |
+| 取り消す | `automation` を外す |
+
+対象リポジトリは `$CLAUDE_HARNESS_DIR/repos.txt`（1行1つ）→ nightly の `config.sh` の
+`REPOS` → カレントリポジトリ、の順に決まります。
+
+**画面から GitHub を書き換えられるので、守りを2枚かけています。**
+サーバーは `127.0.0.1` にしか bind せず、書き込み API は起動ごとに生成する
+トークンを要求します（同じ localhost で開いている別のページから勝手に叩かれないため）。
+実行できるのは上の4操作だけで、`gh` に渡す引数はサーバー側の表から組み立てます。
+リクエストの文字列をコマンド行に流さないので、番号やリポジトリ名に何を入れても
+別のコマンドにはなりません。
 
 ## idea → automation の受け渡し
 
