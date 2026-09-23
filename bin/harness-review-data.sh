@@ -129,6 +129,17 @@ for repo in $repos; do
   jq -s 'add' "$tmp/backlog.json" "$tmp/repo_i.json" > "$tmp/b.next" && mv "$tmp/b.next" "$tmp/backlog.json"
 done
 
+# PR タイトルだけでは中身が分からない古い PR があるので、
+# ブランチ名から辿った Issue のタイトルも添える。
+jq -c '.[] | select(.issue != null) | {repo, number, issue}' "$tmp/prs.json" 2>/dev/null \
+  | while IFS= read -r row; do
+      r=$(printf '%s' "$row" | jq -r .repo)
+      n=$(printf '%s' "$row" | jq -r .number)
+      i=$(printf '%s' "$row" | jq -r .issue)
+      gh issue view "$i" -R "$r" --json title -q '.title' \
+        2>/dev/null > "$tmp/issuetitle_${n}.txt" || true
+    done
+
 # レビュー本文は PR ごとに1回だけ取りに行く (件数が多いと遅いので指摘ありだけ)
 jq -c '.[] | select(.has_findings) | {repo, number}' "$tmp/prs.json" 2>/dev/null \
   | while IFS= read -r row; do
@@ -158,5 +169,11 @@ for pr in data.get("prs", []):
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             pr["review"] = f.read().strip()
+    path = os.path.join(tmp, "issuetitle_%s.txt" % pr["number"])
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            t = f.read().strip()
+        if t:
+            pr["issue_title"] = t
 print(json.dumps(data, ensure_ascii=False))
 PY
