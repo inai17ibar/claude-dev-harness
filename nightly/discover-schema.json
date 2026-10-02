@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "type", "priority", "confidence", "size", "problem", "why", "done_when", "evidence", "key"],
+        "properties": {
+          "title":      { "type": "string", "description": "日本語1行。何をするか/何が起きるかが分かる" },
+          "type":       { "type": "string", "enum": ["bug", "feature", "improvement", "test", "docs"] },
+          "priority":   { "type": "string", "enum": ["p0", "p1", "p2", "p3"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "size":       { "type": "string", "enum": ["s", "m", "l"], "description": "s=1ファイル程度 / m=数ファイル / l=設計から要る" },
+          "problem":    { "type": "string", "description": "現象。どこで何が起きるか (ファイルパスと行番号)" },
+          "why":        { "type": "string", "description": "なぜ問題か。利用者から見て何が困るか" },
+          "done_when":  { "type": "string", "description": "完了の判定。テストで判定できるならそのテスト" },
+          "evidence":   { "type": "array", "items": { "type": "string" }, "description": "根拠の path:line。bug では必須" },
+          "key":        { "type": "string", "description": "英小文字とハイフンの短い識別子。同じ指摘なら毎回同じ値 (例: divide-by-zero)" }
+        }
+      }
+    },
+    "notes": { "type": "string", "description": "起票しなかった理由など、人への短いメモ" }
+  }
+}

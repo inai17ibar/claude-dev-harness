@@ -161,7 +161,7 @@ worktree-clean --all-repos  # 他リポジトリの残骸も対象にする
 ディレクトリしか触りません**。`--all-repos` を付けても、他のリポジトリに現役登録されている
 worktree はスキップします。
 
-### nightly / weekly-audit — 常時稼働マシンでの自律運用
+### nightly / discover — 常時稼働マシンでの自律運用
 
 常時起動しているマシン (Mac mini など) に launchd で登録すると、`automation` ラベルの付いた
 Issue を自動で実装し PR を作ります。ノート PC には入れないでください
@@ -177,10 +177,26 @@ vi ~/.claude-harness/nightly/config.sh   # REPOS を書く
 | ジョブ | スケジュール | 動作 |
 |---|---|---|
 | `com.harness.nightly` | 2:00 と 8〜22時の偶数時 | `automation` ラベルの Issue を `spawn-agents --pr` で実装 |
-| `com.harness.weekly-audit` | 土 7:00 | コードベースを監査して `idea` ラベルの Issue を起票するだけ (実装はしない) |
+| `com.harness.discover` | 毎日 6:40 | 課題・新しい要件を見つけて、種別・優先度ラベル付きの `idea` Issue を起票するだけ (実装はしない) |
 
 想定している回し方は「`idea` で溜める → 人間が選んで `automation` を付ける → 夜間に実装されて
 PR が立つ → 朝レビューしてマージ」です。
+
+**discover** は LLM に読み取り専用で調べさせて JSON の提案を受け取り、ラベル付け・重複判定・
+件数の上限はシェル側で決めて起票します。`type:bug|feature|improvement|test|docs` と
+`priority:p0〜p3` を1つずつ付けるので、選別画面で優先度順・種別ごとに見分けられます。
+コストを抑えるため、**前回から何も変わっていなければ LLM を呼ばず**、ふだんは差分だけを見て、
+全体監査は7日ごと。未選別の idea が溜まっている間も呼びません。
+対象リポジトリに `.github/discover.md` (目標・やらないこと) を置くと新機能の提案が的を射ます。
+設計と設定は [docs/discover.md](docs/discover.md)。
+
+```bash
+nightly/discover-run.sh --dry-run          # 起票せずに何が出るか見る
+nightly/discover-run.sh --repo o/r --full  # 1リポジトリを全体監査
+```
+
+旧 `weekly-audit` は discover に置き換わりました。`./launchd/install.sh` を再実行すると
+旧ジョブは自動で外れます (`nightly/weekly-audit.sh` は `discover-run.sh --full` を呼ぶ互換の入口として残しています)。
 
 集計は `spawn-agents` が出す `HARNESS_EVENT:` マーカーを数えます。ログの日本語文言を
 grep する作りだと、文言を1文字直した瞬間に黙って 0 件と報告されるためです。
@@ -241,11 +257,12 @@ harness-collect-metrics | jq .summary
 | 段階 | 手段 |
 |---|---|
 | 思いつきを記録する | `idea` スキル。1行言うだけで `idea` ラベルの Issue になる |
-| 機械が探す | `weekly-audit`。土 7:00 に監査して `idea` を起票する |
+| 機械が探す | `discover`。毎日 6:40 に差分を監査して、種別・優先度付きの `idea` を起票する |
 | **選ぶ** | **`idea-triage` スキル。「選別して」で一覧を出し、番号で選ぶ** |
 | 実装する | nightly / `spawn-agents` |
 
-選別で見るのは3点です。`skills/idea-triage/scripts/backlog.sh` が一覧に出します。
+選別で見るのは3点です。`skills/idea-triage/scripts/backlog.sh` が一覧に出します
+(discover が付けた優先度の高い順に並びます)。
 
 - **本文の薄さ** — エージェントは Issue 本文だけを仕様として読みます。`idea` スキルは
   思考を止めないため本文を空で登録するので、薄いものは流す前に本文を書く必要があります
@@ -367,7 +384,9 @@ claude-dev-harness/          # このリポジトリ = 唯一の正
   lib/hook-input.sh          # フックの stdin JSON を読む
   hooks/                     # Claude Code の hooks
   skills/                    # ~/.claude/skills へ配置されるスキル
-  nightly/                   # 常時稼働マシン用のオーケストレーター
+  lib/discover.sh            # discover の判断ロジック (検証・重複・LLM を呼ぶか)
+  nightly/                   # 常時稼働マシン用のオーケストレーター (nightly / discover)
+  docs/discover.md           # 自律発見の設計
   templates/auto-merge.yml   # 対象リポジトリに置く auto-merge ワークフロー
   launchd/                   # plist テンプレートと登録スクリプト
   web/index.html             # ダッシュボード
@@ -377,7 +396,8 @@ claude-dev-harness/          # このリポジトリ = 唯一の正
 ~/.claude-harness/           # 実行時の状態（git 管理外）
   logs/                      # issue-*.log, ccx/, sessions.log, auto-commit.log
   dashboard/                 # web/ から配られる静的ファイル
-  nightly/config.sh          # nightly の設定 (マシンごとに違うので git 管理外)
+  nightly/config.sh          # nightly / discover の設定 (マシンごとに違うので git 管理外)
+  discover/state/            # discover が前回どこまで見たか (消すと次回は全体監査)
   env.sh                     # NTFY_TOPIC や Slack Webhook (任意)
   safety-allow.txt           # 任意
   safety-block.txt           # 任意

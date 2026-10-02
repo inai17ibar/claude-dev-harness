@@ -235,10 +235,23 @@ function prCard(pr) {
   return card;
 }
 
+// discover が付ける priority:* / type:* ラベル。無いもの (手で起票した idea) は p2 と p3 の間
+function labelValue(it, prefix) {
+  const l = (it.labels || []).find((n) => n.startsWith(prefix));
+  return l ? l.slice(prefix.length) : "";
+}
+const PRIO_RANK = { p0: 0, p1: 1, p2: 2, "": 2.5, p3: 3 };
+const PRIO_TAG = { p0: "t-stop", p1: "t-warn", p2: "t-dim", p3: "t-dim" };
+const TYPE_NAME = { bug: "バグ", feature: "新機能", improvement: "改善", test: "テスト", docs: "ドキュメント" };
+
 function ideaCard(it) {
   const card = el("div", "card");
   const row = el("div", "row");
   row.append(el("span", "num", "#" + it.number));
+  const prio = labelValue(it, "priority:");
+  const kind = labelValue(it, "type:");
+  if (prio) row.append(el("span", "tag " + (PRIO_TAG[prio] || "t-dim"), prio));
+  if (kind) row.append(el("span", "tag t-dim", TYPE_NAME[kind] || kind));
   row.append(el("span", "title", it.title));
   row.append(el("span", "repo", it.repo.split("/")[1]));
   row.append(el("span", "age", it.age_days + "d"));
@@ -298,7 +311,9 @@ async function load() {
     const waiting = data.prs.filter((p) => !needs.includes(p));
     const backlog = data.backlog
       .slice()
-      .sort((a, b) => (a.promoted - b.promoted) || (a.age_days - b.age_days));
+      .sort((a, b) => (a.promoted - b.promoted)
+        || ((PRIO_RANK[labelValue(a, "priority:")] ?? 2.5) - (PRIO_RANK[labelValue(b, "priority:")] ?? 2.5))
+        || (a.age_days - b.age_days));
 
     fill($("needs"), needs, prCard, "要対応の PR はありません。");
     fill($("waiting"), waiting, prCard, "レビュー待ちの PR はありません。");

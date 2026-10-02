@@ -107,7 +107,7 @@ SLACK_WEBHOOK_URL     # Slack通知先 (任意)
 
 ## ユーザの典型的なフロー（2026-09現在の運用）
 
-1. 思いつきを `idea` ラベルでIssue化（/idea スキル、または土曜7:00の週次監査ジョブが自動起票）
+1. 思いつきを `idea` ラベルでIssue化（/idea スキル、または毎朝6:40の discover ジョブが種別・優先度ラベル付きで自動起票）
 2. やるものに `automation` ラベルを付ける（=発注。GitHubアプリから10秒）
 3. Mac miniの launchd ジョブが 2:00 と 8〜22時の偶数時に `spawn-agents --pr` で実装しPR作成
    （自動マージはリポジトリ設定で不許可のため --pr 運用。PR本文の Closes #N でマージ時にIssueも閉じる）

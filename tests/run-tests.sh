@@ -273,6 +273,196 @@ if should_run "retry"; then
   rm -f "$cnt"
 fi
 
+# ---- discover: 判断ロジック ------------------------------------------------
+group "discover — LLM の提案を起票してよいものだけに絞る"
+if should_run "discover-logic"; then
+  # shellcheck source=../lib/discover.sh
+  . "$ROOT/lib/discover.sh"
+  raw='{"findings":[
+    {"title":"p0 だが確度 medium","type":"BUG","priority":"p0","confidence":"medium","problem":"x","evidence":["src/a.js:3"],"key":"Div By Zero!"},
+    {"title":"根拠の無い bug","type":"bug","priority":"p1","confidence":"high","problem":"x"},
+    {"title":"確度が低い","type":"feature","priority":"p2","confidence":"low","problem":"x"},
+    {"title":"定義外の種別","type":"refactor","priority":"p2","confidence":"high","problem":"x"},
+    {"title":"","type":"docs","priority":"p3","confidence":"high","problem":"x"},
+    {"title":"新機能","type":"feature","priority":"p2","confidence":"high","problem":"y","size":"xl"},
+    {"title":"本物の p0","type":"bug","priority":"p0","confidence":"high","problem":"z","evidence":["src/b.js"]},
+    "壊れた要素"]}'
+  got=$(printf '%s' "$raw" | discover_normalize 5 medium | jq -r '[.[] | "\(.title)/\(.priority)"] | join(",")')
+  assert_eq "本物の p0/p0,p0 だが確度 medium/p1,新機能/p2" "$got" \
+    "定義外・確度低・根拠なし bug を落とし、優先度順に並べる"
+  got=$(printf '%s' "$raw" | discover_normalize 1 medium | jq 'length')
+  assert_eq "1" "$got" "件数の上限を守る"
+  got=$(printf '%s' "$raw" | discover_normalize 5 medium | jq -r '.[1].key + "|" + .[2].size')
+  assert_eq "div-by-zero|m" "$got" "key と size を正規化する"
+  got=$(printf '%s' '"not json object"' | discover_normalize 3 medium)
+  assert_eq "[]" "$got" "壊れた入力でも空配列を返す"
+
+  got=$(printf '%s' '{"structured_output":{"findings":[{"title":"a"}]},"result":"x"}' | discover_extract_output | jq -c .findings)
+  assert_eq '[{"title":"a"}]' "$got" "structured_output を優先して取り出す"
+  got=$(jq -n '{result: "結果です\n```json\n{\"findings\":[{\"title\":\"b\"}]}\n```"}' | discover_extract_output | jq -r '.findings[0].title')
+  assert_eq "b" "$got" "スキーマが効かなくても本文の JSON を拾う"
+
+  assert_eq "$(discover_fingerprint bug k src/a.js:3)" "$(discover_fingerprint bug k src/a.js:120)" \
+    "指紋は行番号がずれても変わらない"
+  if [ "$(discover_fingerprint bug k src/a.js)" != "$(discover_fingerprint bug k src/b.js)" ]; then
+    ok "指紋は別ファイルなら変わる"
+  else
+    ng "指紋は別ファイルなら変わる"
+  fi
+  body=$(printf '%s' '{"title":"t","type":"bug","priority":"p1","confidence":"high","size":"s","problem":"p","why":"","done_when":"d","evidence":["a:1"]}' \
+    | discover_render_body abc123def456 full)
+  got=$(printf '%s' "$body" | jq -Rs '[{body: .}]' | discover_existing_fps)
+  assert_eq "abc123def456" "$got" "本文に埋めた指紋を読み戻せる"
+  case "$body" in
+    *"## 現象"*"## なぜ問題か"*"## 完了の判定"*) ok "本文が idea-triage の3節の形になっている" ;;
+    *) ng "本文が idea-triage の3節の形になっている" ;;
+  esac
+
+  assert_eq "idea,source:discover,type:bug,priority:p1" "$(discover_labels_for bug p1)" "付けるラベル"
+  # 種別・優先度の定義が、ラベル・スキーマ・検証の3か所でそろっていること
+  for t in bug feature improvement test docs; do
+    if discover_label_specs | grep -q "^type:$t|" && jq -e --arg t "$t" \
+        '.properties.findings.items.properties.type.enum | index($t)' "$ROOT/nightly/discover-schema.json" >/dev/null; then
+      ok "type:$t がラベルとスキーマの両方にある"
+    else
+      ng "type:$t がラベルとスキーマの両方にある"
+    fi
+  done
+
+  now=1000000
+  day=86400
+  assert_eq "full" "$(discover_decide_mode $now '' '' h 7 false 0)" "初回は全体監査"
+  assert_eq "full" "$(discover_decide_mode $now $((now - 8 * day)) a b 7 false 0)" "間隔が空いたら全体監査"
+  assert_eq "full" "$(discover_decide_mode $now $((now - day)) a a 7 true 0)" "--full は常に全体監査"
+  assert_eq "incremental" "$(discover_decide_mode $now $((now - day)) a b 7 false 0)" "HEAD が進んだら差分監査"
+  assert_eq "incremental" "$(discover_decide_mode $now $((now - day)) a a 7 false 2)" "新しい CI 失敗があれば差分監査"
+  assert_eq "skip" "$(discover_decide_mode $now $((now - day)) a a 7 false 0)" "変化が無ければ LLM を呼ばない"
+
+  sf=$(mktemp)
+  discover_state_put "$sf" last_sha aaa
+  discover_state_put "$sf" last_run 1
+  discover_state_put "$sf" last_sha bbb
+  assert_eq "bbb|1" "$(discover_state_get "$sf" last_sha)|$(discover_state_get "$sf" last_run)" "状態ファイルの上書き"
+  assert_eq "" "$(discover_state_get /nonexistent last_sha)" "状態ファイルが無くても落ちない"
+  rm -f "$sf"
+fi
+
+# ---- discover: 通しで動かす --------------------------------------------------
+group "discover-run — 偽の gh / claude で通しで動かす"
+if should_run "discover-run"; then
+  dt=$(mktemp -d)
+  mkdir -p "$dt/bin" "$dt/h/nightly" "$dt/repos"
+  git init -q --bare "$dt/origin.git"
+  git clone -q "$dt/origin.git" "$dt/seed" 2>/dev/null
+  (cd "$dt/seed" && git checkout -q -b main && echo 'export const f = () => 1;' > a.js \
+    && git add a.js && git -c user.email=t@t -c user.name=t commit -q -m init && git push -q origin main) 2>/dev/null
+  git -C "$dt/origin.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$dt/origin.git" "$dt/repos/r" 2>/dev/null
+
+  cat > "$dt/h/nightly/config.sh" << EOF
+REPOS="o/r"
+REPOS_DIR="$dt/repos"
+DISCOVER_MAX_ISSUES=3
+EOF
+
+  # 起票済みの指紋を1つ closed に入れておき、再起票されないことを見る
+  old_fp=$(. "$ROOT/lib/discover.sh"; discover_fingerprint improvement retry src/old.js)
+  cat > "$dt/bin/gh" << EOF
+#!/bin/bash
+echo "\$*" >> "$dt/gh.calls"
+case "\$1 \$2" in
+  "auth status") exit 0 ;;
+  "run list") echo '[]' ;;
+  "issue list")
+    case "\$*" in
+      *closed*) echo '[{"number":2,"title":"昔の指摘","stateReason":"COMPLETED","body":"<!-- harness-discover fp=$old_fp -->"}]' ;;
+      *) if [ -n "\${FAKE_BACKLOG:-}" ]; then
+           jq -n --argjson n "\$FAKE_BACKLOG" '[range(\$n) | {number: ., title: "idea \(.)", labels: [{name: "idea"}], body: ""}]'
+         else
+           echo '[{"number":1,"title":"既にある Issue","labels":[{"name":"idea"}],"body":""}]'
+         fi ;;
+    esac ;;
+  "label create") exit 0 ;;
+  "issue create") echo "https://github.com/o/r/issues/\$(wc -l < "$dt/gh.calls" | tr -d ' ')" ;;
+esac
+EOF
+  cat > "$dt/bin/claude" << EOF
+#!/bin/bash
+echo call >> "$dt/claude.calls"; printf "%s\n" "\$*" > "$dt/claude.args"
+cat > "$dt/prompt.seen"
+cat << 'J'
+{"type":"result","is_error":false,"total_cost_usd":0.0421,"structured_output":{"findings":[
+ {"title":"f がゼロで壊れる","type":"bug","priority":"p1","confidence":"high","size":"s","problem":"a.js:1 で…","why":"w","done_when":"d","evidence":["a.js:1"],"key":"zero"},
+ {"title":"既にある Issue","type":"feature","priority":"p2","confidence":"high","size":"m","problem":"p","why":"w","done_when":"d","evidence":[],"key":"dup"},
+ {"title":"根拠なしのバグ","type":"bug","priority":"p1","confidence":"high","size":"s","problem":"p","why":"w","done_when":"d","evidence":[],"key":"nobasis"},
+ {"title":"言い換えた昔の指摘","type":"improvement","priority":"p2","confidence":"high","size":"s","problem":"p","why":"w","done_when":"d","evidence":["src/old.js:9"],"key":"retry"},
+ {"title":"CSV 出力がほしい","type":"feature","priority":"p3","confidence":"medium","size":"m","problem":"p","why":"w","done_when":"d","evidence":[],"key":"csv"}
+]}}
+J
+EOF
+  chmod +x "$dt/bin/gh" "$dt/bin/claude"
+
+  run_discover() {
+    PATH="$dt/bin:$PATH" CLAUDE_HARNESS_DIR="$dt/h" HOME="$dt" NTFY_TOPIC="" SLACK_WEBHOOK_URL="" \
+      "$ROOT/nightly/discover-run.sh" "$@" > "$dt/out.log" 2>&1
+  }
+
+  run_discover; rc=$?
+  assert_eq "0" "$rc" "1回目が成功する"
+  creates=$(grep -c '^issue create' "$dt/gh.calls" 2>/dev/null | tr -dc '0-9')
+  assert_eq "2" "${creates:-0}" "重複・根拠なし・起票済みを除いた2件だけ起票する"
+  if grep '^issue create' "$dt/gh.calls" | grep -q -- '--title f がゼロで壊れる .*--label idea,source:discover,type:bug,priority:p1'; then
+    ok "種別・優先度ラベルを付けて起票する"
+  else
+    ng "種別・優先度ラベルを付けて起票する: $(grep '^issue create' "$dt/gh.calls" | head -1)"
+  fi
+  if grep '^issue create' "$dt/gh.calls" | grep -q 'automation'; then
+    ng "既定では automation を付けない"
+  else
+    ok "既定では automation を付けない"
+  fi
+  if grep -q -- '--allowedTools' "$dt/claude.args" && ! grep -q -- '--allowedTools [^ ]*Write' "$dt/claude.args"; then
+    ok "claude には読み取り系のツールだけを許す"
+  else
+    ng "claude には読み取り系のツールだけを許す: $(head -c 300 "$dt/claude.args")"
+  fi
+  if grep -q '既にある Issue' "$dt/prompt.seen" && grep -q '全体監査' "$dt/prompt.seen"; then
+    ok "初回は全体監査で、既存 Issue をプロンプトに渡す"
+  else
+    ng "初回は全体監査で、既存 Issue をプロンプトに渡す"
+  fi
+  assert_eq "1" "$(grep -c '^HARNESS_EVENT:discover_cost .*usd=0.0421' "$dt/out.log")" "コストをイベントとして残す"
+
+  # 2回目: 何も変わっていないので LLM を呼ばない
+  : > "$dt/claude.calls"
+  run_discover
+  assert_eq "0" "$(wc -l < "$dt/claude.calls" | tr -d ' ')" "変化が無ければ claude を呼ばない"
+  assert_eq "1" "$(grep -c '^HARNESS_EVENT:discover_skipped .*reason=no_change' "$dt/out.log")" "skip をイベントで残す"
+
+  # 3回目: コミットが進んでも、未選別の idea が溜まっていれば呼ばない
+  (cd "$dt/seed" && echo '// next' >> a.js && git -c user.email=t@t -c user.name=t commit -qam next && git push -q origin main) 2>/dev/null
+  FAKE_BACKLOG=20 run_discover
+  assert_eq "0" "$(wc -l < "$dt/claude.calls" | tr -d ' ')" "未選別の idea が上限以上なら claude を呼ばない"
+  assert_eq "1" "$(grep -c '^HARNESS_EVENT:discover_skipped .*reason=backlog_full' "$dt/out.log")" "backlog_full をイベントで残す"
+
+  # 4回目: 選別が進めば、持ち越した差分を監査する
+  run_discover
+  assert_eq "1" "$(wc -l < "$dt/claude.calls" | tr -d ' ')" "選別が進めば差分監査で claude を呼ぶ"
+  if grep -q '前回 (' "$dt/prompt.seen" && grep -q 'a.js' "$dt/prompt.seen"; then
+    ok "差分監査では変更ファイルをプロンプトに渡す"
+  else
+    ng "差分監査では変更ファイルをプロンプトに渡す"
+  fi
+
+  # --dry-run: LLM は呼ぶが、起票も状態更新もしない
+  before_creates=$(grep -c '^issue create' "$dt/gh.calls" | tr -dc '0-9')
+  before_state=$(cat "$dt/h/discover/state/o_r")
+  run_discover --full --dry-run
+  assert_eq "$before_creates" "$(grep -c '^issue create' "$dt/gh.calls" | tr -dc '0-9')" "--dry-run では起票しない"
+  assert_eq "$before_state" "$(cat "$dt/h/discover/state/o_r")" "--dry-run では状態を進めない"
+  rm -rf "$dt"
+fi
+
 # ---- symlink 経由の呼び出し ---------------------------------------------
 group "symlink 経由で呼んでも lib を見つけられる"
 if should_run "symlink"; then

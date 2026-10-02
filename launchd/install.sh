@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — nightly / weekly-audit を launchd に登録する (macOS 専用)。
+# install.sh — nightly / discover を launchd に登録する (macOS 専用)。
 #
 # 常時稼働マシン (Mac mini など) でだけ実行する。ノート PC で入れると
 # 蓋を閉じている間に走らず、起きた瞬間にまとめて走る。
@@ -19,7 +19,9 @@ HARNESS_ROOT=$(cd -P "$(dirname "$_harness_self")/.." && pwd)
 . "$HARNESS_ROOT/lib/common.sh"
 
 AGENTS_DIR="$HOME/Library/LaunchAgents"
-JOBS="nightly weekly-audit"
+JOBS="nightly discover"
+# 以前のバージョンが登録していたジョブ。登録・解除のたびに片付ける
+LEGACY_JOBS="weekly-audit"
 DRY_RUN=false
 UNINSTALL=false
 
@@ -35,7 +37,8 @@ while [ $# -gt 0 ]; do
 
 登録されるジョブ:
   com.harness.nightly        2:00 と 8〜22時の偶数時。automation ラベルの Issue を実装
-  com.harness.weekly-audit   土 7:00。idea ラベルの Issue を起票するだけ
+  com.harness.discover       毎日 6:40。課題・要件を見つけて idea Issue を起票するだけ
+                             (変化が無ければ LLM を呼ばない。全体監査は7日ごと)
 
 設定は \$CLAUDE_HARNESS_DIR/nightly/config.sh (サンプル: nightly/config.example.sh)。
 モデルや SLACK_WEBHOOK_URL は plist に焼かず、config.sh か
@@ -53,7 +56,7 @@ label_for() { printf 'com.harness.%s' "$1"; }
 
 if $UNINSTALL; then
   echo "🧹 launchd ジョブを削除します"
-  for job in $JOBS; do
+  for job in $JOBS $LEGACY_JOBS; do
     label=$(label_for "$job")
     plist="$AGENTS_DIR/${label}.plist"
     if [ -f "$plist" ]; then
@@ -118,7 +121,18 @@ if [ ! -f "$CONFIG_FILE" ]; then
   echo "   REPOS を編集してから再実行してください"
 fi
 
-mkdir -p "$AGENTS_DIR" "$HARNESS_DIR/nightly" "$HARNESS_DIR/audit"
+mkdir -p "$AGENTS_DIR" "$HARNESS_DIR/nightly" "$HARNESS_DIR/discover"
+
+for job in $LEGACY_JOBS; do
+  label=$(label_for "$job")
+  plist="$AGENTS_DIR/${label}.plist"
+  [ -f "$plist" ] || continue
+  echo "  🧹 旧ジョブ $label を削除 (discover に置き換わりました)"
+  $DRY_RUN && continue
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null \
+    || launchctl unload "$plist" 2>/dev/null || true
+  rm -f "$plist"
+done
 
 for job in $JOBS; do
   label=$(label_for "$job")

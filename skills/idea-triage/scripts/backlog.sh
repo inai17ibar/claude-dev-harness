@@ -9,6 +9,7 @@
 #   本文字数  … nightly のエージェントは Issue 本文だけを仕様として読む。
 #               本文が薄いものをそのまま automation にすると、
 #               エージェントは手がかりなしで実装することになる
+#   優先度/種別 … discover が付けた priority:* / type:* ラベル。高い順に並べる
 #   フラグ    … 未マージの PR が既にあるものは nightly がスキップするので、
 #               ラベルを付けても動かない
 set -uo pipefail
@@ -35,22 +36,29 @@ for repo in "$@"; do
   busy=$(printf '%s' "$prs" | jq -r '[.[] | (.headRefName // "")
     | capture("^agent/issue-(?<n>[0-9]+)-") | .n] | join(" ")')
 
+  # 優先度 (priority:p0〜p3) の高い順、同じなら新しい順。
+  # 優先度の無いもの (idea スキルで手で起票したもの) は p2 と p3 の間に置く
   printf '%s' "$issues" | jq -r --argjson now "$now" '
-    .[] | [
+    def lab($p): [.labels[].name | select(startswith($p)) | ltrimstr($p)][0] // "";
+    map(. + {prio: lab("priority:"), kind: lab("type:")})
+    | sort_by([({"p0":0,"p1":1,"p2":2,"":2.5,"p3":3}[.prio] // 2.5), (.createdAt | fromdateiso8601 | -.)])
+    | .[] | [
       .number,
       (($now - (.createdAt | fromdateiso8601)) / 86400 | floor),
       (.body // "" | length),
       ([.labels[].name] | join(",")),
+      (if .prio == "" then "--" else .prio end),
+      (if .kind == "" then "-" else .kind end),
       .title
-    ] | @tsv' | while IFS=$'\t' read -r num age blen labels title; do
+    ] | @tsv' | while IFS=$'\t' read -r num age blen labels prio kind title; do
       flags=""
       case " $busy " in *" $num "*) flags="${flags}PR中 " ;; esac
       [ "$blen" -lt 120 ] && flags="${flags}本文薄 "
       [ "$age" -gt 30 ] && flags="${flags}古い "
       case ",$labels," in *,automation,*) flags="${flags}選別済 " ;; esac
-      printf '  #%-4s %3sd  %5s字  %-14s %s\n' \
-        "$num" "$age" "$blen" "${flags:-—}" "$title"
+      printf '  #%-4s %-2s %-11s %3sd  %5s字  %-14s %s\n' \
+        "$num" "$prio" "$kind" "$age" "$blen" "${flags:-—}" "$title"
     done
 done
 
-printf '\n凡例: PR中=未マージPRあり(nightlyはスキップ) / 本文薄=実装の手がかりが不足 / 古い=30日超 / 選別済=automation付き\n'
+printf '\n並び: 優先度 (p0→p3、無印は p2 の後) → 新しい順。種別・優先度は discover が付ける\n凡例: PR中=未マージPRあり(nightlyはスキップ) / 本文薄=実装の手がかりが不足 / 古い=30日超 / 選別済=automation付き\n'
