@@ -45,6 +45,36 @@ notify() {
   "$NOTIFY" -t "Nightly Harness" -p "${2:-default}" ${3:+-u "$3"} "$1" 2>/dev/null || true
 }
 
+# auto-merge.yml は GITHUB_TOKEN でマージするため、PR 本文の「Closes #N」が効かず
+# Issue が開いたまま残る (issues: write を足しても閉じなかった。2026-10-19 #73)。
+# 放っておくと解決済みの Issue に毎回エージェントが起動し、PR 作成で失敗する。
+# 収集時にマージ済みの PR を持つ Issue を見つけ、閉じて対象から外す。
+# shellcheck disable=SC2016 # $owner などは GraphQL の変数で、シェルでは展開しない
+MERGED_ISSUES_QUERY='
+query($owner: String!, $name: String!, $label: String!, $limit: Int!) {
+  repository(owner: $owner, name: $name) {
+    issues(states: OPEN, labels: [$label], first: $limit,
+           orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes {
+        number
+        closedByPullRequestsReferences(first: 5, includeClosedPrs: true) {
+          nodes { number state }
+        }
+      }
+    }
+  }
+}'
+
+# merged_issue_prs — 上のクエリの応答 (stdin) から、マージ済みの PR を持つ
+# Issue を "Issue番号<TAB>PR番号" で1行ずつ出す。
+merged_issue_prs() {
+  jq -r '.data.repository.issues.nodes[]?
+    | .number as $issue
+    | [.closedByPullRequestsReferences.nodes[]? | select(.state == "MERGED")][0]
+    | select(. != null)
+    | "\($issue)\t\(.number)"'
+}
+
 log "================================="
 log "🌙 Nightly Harness 実行開始"
 log "================================="
@@ -156,6 +186,25 @@ for repo in $REPO_LIST; do
   issues=$(gh issue list --repo "$repo" --state open \
     --label "$LABEL_FILTER" --limit "$MAX_ISSUES_PER_REPO" \
     --json number,title 2>/dev/null || echo "[]")
+
+  merged=$(gh api graphql -F owner="${repo%%/*}" -F name="${repo#*/}" \
+    -F label="$LABEL_FILTER" -F limit="$MAX_ISSUES_PER_REPO" \
+    -f query="$MERGED_ISSUES_QUERY" 2>/dev/null | merged_issue_prs)
+  while IFS=$'\t' read -r num pr; do
+    [ -n "$num" ] || continue
+    if $DRY_RUN; then
+      log "    [DRY_RUN] #$num は PR #$pr でマージ済み。閉じて対象から外す"
+    elif gh issue close "$num" --repo "$repo" --reason completed \
+        --comment "PR #$pr でマージ済みのため閉じます (Nightly Harness)" >/dev/null 2>&1; then
+      log "    ✅ #$num は PR #$pr でマージ済み。閉じて対象から外しました"
+    else
+      log "    ⚠️  #$num は PR #$pr でマージ済みだが閉じられなかった。対象からは外す"
+    fi
+    # 閉じられなくても、もう一度エージェントを起動する意味はない
+    issues=$(printf '%s' "$issues" | jq -c --argjson n "$num" '[.[] | select(.number != $n)]')
+  done <<EOF
+$merged
+EOF
 
   count=$(printf '%s' "$issues" | jq 'length' 2>/dev/null || echo 0)
   log "    Open Issue数 (label=$LABEL_FILTER): $count"
