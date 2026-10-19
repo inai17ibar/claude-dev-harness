@@ -19,9 +19,9 @@ on:
 permissions:
   pull-requests: write
   contents: write
-  # auto-merge を有効化したトークンが「Closes #N」で Issue を閉じる。
-  # これが無いと、マージされても Issue が開いたまま残り、
-  # nightly が毎回「解決済みの Issue」にエージェントを起動してしまう。
+  # 「Closes #N」で Issue を閉じるつもりで足したが、GITHUB_TOKEN でマージすると
+  # これがあっても Issue は閉じなかった (2026-10-19 #73)。
+  # 開いたまま残った Issue は nightly-run.sh が収集時に閉じる。
   issues: write
 
 jobs:

@@ -181,6 +181,27 @@ if should_run "open-pr"; then
   assert_eq ""                             "$(info 48)" "エージェント以外のPRを拾わない"
 fi
 
+# ---- マージ済みPRを持つIssueの検出 ---------------------------------------
+group "nightly — マージ済みPRがあるのに開いたままのIssue"
+# GITHUB_TOKEN の auto-merge では Closes #N が効かない。拾い損ねると
+# 解決済みの Issue に毎回エージェントが起動する (2026-10-19 #73)。
+if should_run "merged-issue"; then
+  # shellcheck disable=SC1090
+  . /dev/stdin <<< "$(sed -n '/^merged_issue_prs/,/^}/p' "$ROOT/nightly/nightly-run.sh")"
+  fixture='{"data":{"repository":{"issues":{"nodes":[
+    {"number":73,"closedByPullRequestsReferences":{"nodes":[{"number":74,"state":"MERGED"}]}},
+    {"number":80,"closedByPullRequestsReferences":{"nodes":[{"number":81,"state":"OPEN"}]}},
+    {"number":82,"closedByPullRequestsReferences":{"nodes":[
+      {"number":83,"state":"CLOSED"},{"number":85,"state":"MERGED"},{"number":86,"state":"MERGED"}]}},
+    {"number":90,"closedByPullRequestsReferences":{"nodes":[]}}
+  ]}}}}'
+  got=$(printf '%s' "$fixture" | merged_issue_prs | tr '\t' '|' | tr '\n' ',')
+  assert_eq "73|74,82|85," "$got" "マージ済みの PR を持つ Issue だけを、最初のマージ済み PR と組で返す"
+
+  got=$(printf '%s' '{"errors":[{"message":"boom"}]}' | merged_issue_prs 2>/dev/null)
+  assert_eq "" "$got" "API エラーの応答では何も返さない (Issue を閉じない)"
+fi
+
 # ---- worktree-clean のブランチ抽出 ---------------------------------------
 group "worktree-clean — git branch --merged の行頭マーカー"
 # "+ " は他の worktree でチェックアウト中の印。剥がし忘れると
