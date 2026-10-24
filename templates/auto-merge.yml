@@ -1,8 +1,10 @@
 # エージェントの PR を自動マージする。
 #
-# Claude Dev Harness を使うリポジトリに置く。次の2つのラベルが付いた PR は
-# 対象から外し、人が判断するまでマージしない。
+# Claude Dev Harness を使うリポジトリに置く。次のラベルが付いた PR は
+# 対象から外し、ラベルが外れるまでマージしない。
 #
+#   review-pending   … 自動レビュー中。harness が PR 作成時に付け、レビューが終わったら外す。
+#                      これが無いと、CI が速いリポジトリではレビューより先にマージされる
 #   needs-attention  … 機械が進めない (CI失敗・コンフリクト)。harness が自動で付け外しする
 #   review-findings  … 自動レビューが指摘を出した。外すのは人間の仕事で、
 #                      外すこと自体が「読んだ・承認した」の合図になる
@@ -44,7 +46,7 @@ jobs:
             ${{ github.event_name == 'pull_request'
                 && github.event.pull_request.number
                 || join(github.event.check_suite.pull_requests.*.number, ' ') }}
-          BLOCKING_LABELS: "needs-attention review-findings"
+          BLOCKING_LABELS: "review-pending needs-attention review-findings"
         run: |
           # checkout していないので gh はリポジトリを git から判定できない。
           # -R を付けないと "fatal: not a git repository" で失敗する。
