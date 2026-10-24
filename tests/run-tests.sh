@@ -226,7 +226,7 @@ if should_run "review-gate"; then
     esac
   }
   # shellcheck disable=SC2034 # 読み込んだ関数が参照する
-  REVIEW_LABEL=review-findings REVIEW_PENDING_LABEL=review-pending REVIEW_HELD=false
+  REVIEW_LABEL=review-findings REVIEW_PENDING_LABEL=review-pending REVIEW_HELD=false REPO_SLUG=o/r
   # review_pr の分岐と同じ形で呼ぶ
   gate() {  # gate <findings>
     : > "$calls"
@@ -235,19 +235,19 @@ if should_run "review-gate"; then
   }
 
   assert_eq "9 --remove-label review-pending," "$(gate 0)" "指摘なしは review-pending を外すだけ"
-  assert_eq "9 --add-label review-findings,9 --remove-label review-pending," "$(gate 2)" \
-    "指摘ありは review-findings を付けてから review-pending を外す"
-  assert_eq "9 --add-label review-findings,9 --remove-label review-pending," "$(gate '?')" \
+  assert_eq "9 --add-label review-findings,emit held issue=1 pr=9 url=https://github.com/o/r/pull/9,9 --remove-label review-pending," "$(gate 2)" \
+    "指摘ありは review-findings を付けてから review-pending を外し、止めたことを知らせる"
+  assert_eq "9 --add-label review-findings,emit held issue=1 pr=9 url=https://github.com/o/r/pull/9,9 --remove-label review-pending," "$(gate '?')" \
     "件数が読めないときも止める側に倒す"
   got=$(PR_STATE="OPEN true" gate 1)
-  assert_eq "9 --add-label review-findings,disable-auto,9 --remove-label review-pending," "$got" \
+  assert_eq "9 --add-label review-findings,disable-auto,emit held issue=1 pr=9 url=https://github.com/o/r/pull/9,9 --remove-label review-pending," "$got" \
     "既に予約されていたら解除する (古い auto-merge.yml のリポジトリ)"
   got=$(FAIL_ADD=1 gate 1)
   assert_eq "9 --add-label review-findings,emit failed issue=1 pr=9 stage=review_gate," "$got" \
     "review-findings を付けられなければ review-pending を残し、失敗として数える"
   got=$(PR_STATE="MERGED false" gate 1)
   assert_eq "9 --add-label review-findings,emit failed issue=1 pr=9 stage=review_gate," "$got" \
-    "レビュー前にマージされていたら失敗として数える"
+    "レビュー前にマージされていたら、止めたとは数えず失敗として数える"
   REVIEW_HELD=false; hold_for_human 1 9 "指摘" >/dev/null
   assert_eq "true" "$REVIEW_HELD" "止めたら --merge でも予約しない印を立てる"
   rm -f "$calls"
@@ -308,8 +308,24 @@ if should_run "event-contract"; then
   rendered=$(printf '%s\n' "$line" | sed -E "$sed_expr")
   assert_eq "  #59 → PR #42 (ci_failed:test)" "$rendered" "nightly の sed が PR 一覧行にできる"
 
+  # レビューで止めた PR は URL つきで通知に載せる
+  held_line=$(emit held "issue=78" "pr=79" "url=https://github.com/o/r/pull/79")
+  held_expr='s/.*issue=([0-9]+) pr=([0-9]+) url=([^ ]*).*/  #\1 → PR #\2 \3/'
+  if grep -qF "$held_expr" "$ROOT/nightly/nightly-run.sh"; then
+    ok "テストの held 用 sed が nightly-run.sh と一致している"
+  else
+    ng "テストの held 用 sed が nightly-run.sh に見つからない (両方そろえること)"
+  fi
+  assert_eq "  #78 → PR #79 https://github.com/o/r/pull/79" \
+    "$(printf '%s\n' "$held_line" | sed -E "$held_expr")" "nightly の sed が止めた PR の一覧行にできる"
+  if grep -q 'emit held "issue=$issue" "pr=$pr_num" "url=' "$ROOT/bin/spawn-agents.sh"; then
+    ok "spawn-agents が held を issue / pr / url の順で出す"
+  else
+    ng "spawn-agents の emit held の形が変わった (nightly の sed とそろえること)"
+  fi
+
   # 他のイベントも nightly の count_event が拾える形か
-  for kind in agent_done agent_timeout pr_created merge_scheduled merged failed; do
+  for kind in agent_done agent_timeout pr_created merge_scheduled merged failed held; do
     l=$(emit "$kind" "issue=1")
     c=$(printf '%s\n' "$l" | grep -c "^HARNESS_EVENT:$kind ")
     assert_eq "1" "$c" "count_event が $kind を拾える"

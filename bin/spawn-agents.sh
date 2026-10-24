@@ -591,6 +591,10 @@ hold_for_human() {
       harness_retry 3 5 gh pr merge "$pr_num" --disable-auto >/dev/null && auto_ok=true ;;
   esac
 
+  # 止めた PR は人が見るまで動かない。nightly はこれを数えて通知する。
+  # 次の回からは「レビュー待ち」のスキップに紛れるので、知らせるのはこの1回だけ。
+  $label_ok && emit held "issue=$issue" "pr=$pr_num" "url=https://github.com/${REPO_SLUG}/pull/${pr_num}"
+
   if $label_ok && $auto_ok; then
     harness_log "   🛑 Issue #${issue}: ${reason}。ラベルを付け、自動マージを止めました"
   elif $label_ok; then
