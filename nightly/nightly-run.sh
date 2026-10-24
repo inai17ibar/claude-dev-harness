@@ -283,6 +283,10 @@ pr_created=$(count_event pr_created)
 merge_scheduled=$(count_event merge_scheduled)
 merged=$(count_event merged)
 failed=$(count_event failed)
+# 自動レビューの指摘で止めた PR。人がラベルを外すまでマージされない。
+held=$(count_event held)
+held_list=$(grep "^HARNESS_EVENT:held " "$RUN_LOG" 2>/dev/null \
+  | sed -E 's/.*issue=([0-9]+) pr=([0-9]+) url=([^ ]*).*/  #\1 → PR #\2 \3/' || true)
 
 # スキップは2種類ある。放っておけば進むもの (レビュー待ち・CI実行中) と、
 # 人が見ないと永久に止まるもの (CI失敗・コンフリクト)。
@@ -307,11 +311,15 @@ cat > "$SUMMARY_FILE" << EOF
   詰まり(要対応): ${skipped_stuck}${stuck_new:+ (うち新規 ${stuck_new})}
   失敗: ${failed}
 PR作成: ${pr_created}
+レビューで停止: ${held}
 マージ予約: ${merge_scheduled}
 マージ完了: ${merged}
 ${stuck_list:+
 🛑 人手が要る PR:
 ${stuck_list}
+}${held_list:+
+🔍 レビューの指摘で止めた PR (読んで review-findings を外すとマージ):
+${held_list}
 }
 モデル: ${MODEL}
 ログ: ${RUN_LOG}
@@ -323,6 +331,9 @@ cat "$SUMMARY_FILE"
 notify_lines=""
 [ "$stuck_new" -gt 0 ] && notify_lines="${notify_lines}🛑 詰まっている PR が ${stuck_new} 件
 ${stuck_new_list}
+"
+[ "$held" -gt 0 ] && notify_lines="${notify_lines}🔍 レビューの指摘で止めた PR が ${held} 件
+${held_list}
 "
 [ "$timeout_count" -gt 0 ] && notify_lines="${notify_lines}⏱️ タイムアウトしたエージェント ${timeout_count} 件
 "
