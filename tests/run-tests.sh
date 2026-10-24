@@ -202,6 +202,58 @@ if should_run "merged-issue"; then
   assert_eq "" "$got" "API エラーの応答では何も返さない (Issue を閉じない)"
 fi
 
+# ---- レビューが終わるまで自動マージさせない --------------------------------
+group "spawn-agents — レビュー結果でラベルを付け外しする順番"
+# CI が速いと、レビューより先にマージされる (2026-10-19 harness-test #76)。
+# review-pending を外した瞬間に auto-merge.yml が動くので、
+# review-findings はそれより前に付いていないといけない。
+if should_run "review-gate"; then
+  # shellcheck disable=SC1090
+  . /dev/stdin <<< "$(sed -n '/^hold_for_human/,/^}/p; /^release_review/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
+  calls=$(mktemp)
+  harness_log() { :; }
+  harness_retry() { shift 2; "$@"; }
+  emit() { echo "emit $*" >> "$calls"; }
+  # gh の偽物。呼ばれた操作を順に記録する。FAIL_ADD=1 でラベル付与を失敗させる
+  gh() {
+    case "$1 $2" in
+      "pr edit")  echo "$3 $4 $5" >> "$calls"
+                  [ "$4" = "--add-label" ] && [ "${FAIL_ADD:-0}" = 1 ] && return 1
+                  return 0 ;;
+      "pr view")  echo "${PR_STATE:-OPEN false}" ;;
+      "pr merge") echo "disable-auto" >> "$calls" ;;
+      *)          return 0 ;;
+    esac
+  }
+  # shellcheck disable=SC2034 # 読み込んだ関数が参照する
+  REVIEW_LABEL=review-findings REVIEW_PENDING_LABEL=review-pending REVIEW_HELD=false
+  # review_pr の分岐と同じ形で呼ぶ
+  gate() {  # gate <findings>
+    : > "$calls"
+    if [ "$1" = "0" ] || hold_for_human 1 9 "指摘"; then release_review 1 9; fi
+    tr '\n' ',' < "$calls"
+  }
+
+  assert_eq "9 --remove-label review-pending," "$(gate 0)" "指摘なしは review-pending を外すだけ"
+  assert_eq "9 --add-label review-findings,9 --remove-label review-pending," "$(gate 2)" \
+    "指摘ありは review-findings を付けてから review-pending を外す"
+  assert_eq "9 --add-label review-findings,9 --remove-label review-pending," "$(gate '?')" \
+    "件数が読めないときも止める側に倒す"
+  got=$(PR_STATE="OPEN true" gate 1)
+  assert_eq "9 --add-label review-findings,disable-auto,9 --remove-label review-pending," "$got" \
+    "既に予約されていたら解除する (古い auto-merge.yml のリポジトリ)"
+  got=$(FAIL_ADD=1 gate 1)
+  assert_eq "9 --add-label review-findings,emit failed issue=1 pr=9 stage=review_gate," "$got" \
+    "review-findings を付けられなければ review-pending を残し、失敗として数える"
+  got=$(PR_STATE="MERGED false" gate 1)
+  assert_eq "9 --add-label review-findings,emit failed issue=1 pr=9 stage=review_gate," "$got" \
+    "レビュー前にマージされていたら失敗として数える"
+  REVIEW_HELD=false; hold_for_human 1 9 "指摘" >/dev/null
+  assert_eq "true" "$REVIEW_HELD" "止めたら --merge でも予約しない印を立てる"
+  rm -f "$calls"
+  unset -f gh harness_log harness_retry emit gate
+fi
+
 # ---- worktree-clean のブランチ抽出 ---------------------------------------
 group "worktree-clean — git branch --merged の行頭マーカー"
 # "+ " は他の worktree でチェックアウト中の印。剥がし忘れると
