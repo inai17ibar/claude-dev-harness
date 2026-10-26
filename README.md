@@ -207,23 +207,35 @@ vi ~/.claude-harness/nightly/config.sh   # REPOS を書く
 | `promises` | README・UI・API が約束しているのに未実装・未配線の機能 |
 | `tests` | 壊れても気づけない場所 |
 
-監査は clone 本体ではなく使い捨ての worktree で走らせ、起票前に失敗するテストを書いて
-問題が実在するかを確かめます。再現できたものには `repro` を付け、そのテストを本文に
-載せます (そのまま nightly のエージェントの完了判定になります)。テストが通ってしまったものは
+監査は nightly が使う `~/repos` の clone には触れず、GitHub から取り直した使い捨ての clone
+(サンドボックス) で走らせます。push 先は無効化し、npm のライフサイクルスクリプトも止めます。
+`node_modules` は `~/repos` 側にあれば APFS の複製 (`cp -c`) で借りるので、監査で書き換えても元には
+影響しません。終了時 (シグナルや打ち切りを含む) にサンドボックスは消え、次回の起動時にも残骸を掃除します。
+
+起票前に失敗するテストを書いて問題が実在するかを確かめ、再現できたものには `repro` を付けて
+テストのコードを本文に載せます。サンドボックスは捨てるので、テストは本文にだけ残ります
+(実装するエージェントが本文から書き起こし、完了判定に使います)。テストが通ってしまったものは
 起票しません。ほかに深刻度 (`sev:high` / `sev:mid` / `sev:low`) と観点 (`audit:<観点>`) の
-ラベルが付きます。重複チェックは Open な Issue に加えて、直近90日に閉じた Issue と Open な PR も見ます。
+ラベルが付きます。重複チェックは Open な Issue に加えて、直近90日に閉じた Issue と Open な PR も
+見ます (タイトルは制御文字を落とし、データとして渡します)。
 
 設定は `~/.claude-harness/audit/config.sh` で上書きします。
 
 ```bash
 AUDIT_REPOS=("inai17ibar/stune")
 AUDIT_LENSES="security data-integrity error-surfacing"  # 回す観点と順番
-AUDIT_REPRO=true          # false で再現テストを書かず、コードに触れない監査に戻す
+AUDIT_REPRO=true          # false で再現テストを書かず、再現手順だけを書く
+AUDIT_TIMEOUT=2700        # 1リポジトリあたりの上限秒数 (0 で無制限)。長引くと 8:00 の nightly と重なる
 AUDIT_AUTO_PROMOTE=0      # >0 で repro かつ sev:high のものをこの件数まで automation に昇格
 ```
 
-`AUDIT_AUTO_PROMOTE` は既定で 0 (人が選ぶ) です。上げても、PR は自動レビューの指摘が
-消えるまで自動マージされないので、最後の判断は人に残ります。
+**監査エージェントには `automation` を付けさせません。** プロンプトで禁じたうえで、今回起票した
+Issue に付いていたら実行後に外し、通知に出します。昇格は `AUDIT_AUTO_PROMOTE` の規則によるものだけです。
+ただし gh の権限では「Issue を作れるがラベルは触れない」に分けられないので、技術的に不可能には
+なっていません。監査の実行中 (7:00〜) に付いたものを、8:00 の nightly が後始末より先に拾う余地は残ります。
+`AUDIT_AUTO_PROMOTE` は既定で 0 (人が選ぶ) です。上げると、昇格した Issue はその日の nightly が
+実装し、**自動レビューで指摘が無ければ自動マージまで進みます。** 人の判断を挟みたいなら 0 のままにしてください。
+二重起動はロック (`~/.claude-harness/audit/.lock`) で防ぎます。
 
 ```bash
 AUDIT_LENS=security nightly/weekly-audit.sh   # 観点を指定して手動で1回走らせる

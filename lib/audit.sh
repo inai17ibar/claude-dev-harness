@@ -123,5 +123,32 @@ audit_known_titles() {
       --json number,title -q '.[] | "#\(.number) [closed] \(.title)"' 2>/dev/null
     gh pr list --repo "$repo" --state open --limit 100 \
       --json number,title -q '.[] | "PR#\(.number) \(.title)"' 2>/dev/null
-  } | sort -u
+  } | audit_sanitize_lines | sort -u
+}
+
+# audit_sanitize_lines
+# プロンプトに埋め込む外部由来の文字列 (Issue / PR のタイトル) を無害化する。
+# タイトルは誰でも付けられるので、制御文字を落とし、コードフェンスを閉じて
+# 「データの外」に出られないよう ``` を潰す。指示として扱わないことはプロンプト側で明記する。
+audit_sanitize_lines() {
+  LC_ALL=C tr -d '\000-\011\013-\037\177' | sed 's/```/ʼʼʼ/g'
+}
+
+# audit_issue_numbers <owner/repo>
+# 標準入力 (監査エージェントの出力) から、そのリポジトリの Issue URL の番号を
+# 重複なく取り出す。gh の検索 API は作成直後の Issue を返さないことがあるので、
+# 今回の起票はエージェントが出力した URL を正とする。
+audit_issue_numbers() {
+  local repo="$1"
+  grep -oE "https://github\.com/${repo}/issues/[0-9]+" \
+    | sed 's|.*/||' | sort -un
+}
+
+# audit_label_has <ラベル(カンマ区切り)> <ラベル>
+# カンマ区切りのラベル一覧に、指定のラベルが完全一致で含まれるか。
+audit_label_has() {
+  case ",$1," in
+    *",$2,"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }

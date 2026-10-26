@@ -522,6 +522,29 @@ STUB
   esac
   rm -rf "$stubdir"
 
+  # タイトルは誰でも付けられる。制御文字とコードフェンスを落とす
+  esc=$(printf 'a\033[31mb\tc ```x``` 日本語\n')
+  got=$(printf '%s\n' "$esc" | audit_sanitize_lines)
+  case "$got" in
+    *$'\033'*|*'```'*) ng "audit: タイトルから制御文字とフェンスを落とす ($got)" ;;
+    *"日本語"*) ok "audit: タイトルから制御文字とフェンスを落とす (多バイト文字は残す)" ;;
+    *) ng "audit: 多バイト文字が消えた ($got)" ;;
+  esac
+
+  out=$(printf '%s\n' \
+    "起票しました https://github.com/o/r/issues/45" \
+    "https://github.com/o/r/issues/46 と https://github.com/o/r/issues/45" \
+    "別リポジトリ https://github.com/o/r2/issues/9" \
+    "PR https://github.com/o/r/pull/7" | audit_issue_numbers o/r | tr '\n' ' ')
+  assert_eq "45 46 " "$out" "audit: 出力から自リポジトリの Issue 番号だけを重複なく取り出す"
+
+  if audit_label_has "idea,repro,sev:high" repro && ! audit_label_has "idea,not-repro" repro \
+     && ! audit_label_has "idea,repro-candidate" repro; then
+    ok "audit: ラベルは完全一致で判定する"
+  else
+    ng "audit: ラベルは完全一致で判定する"
+  fi
+
   # 観点名を打ち間違えたら、gh や claude を呼ぶ前に止まる
   tmph=$(mktemp -d)
   out=$(CLAUDE_HARNESS_DIR="$tmph" AUDIT_LENS=no-such-lens "$ROOT/nightly/weekly-audit.sh" 2>&1)
