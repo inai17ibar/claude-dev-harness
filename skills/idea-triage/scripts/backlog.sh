@@ -10,7 +10,8 @@
 #               本文が薄いものをそのまま automation にすると、
 #               エージェントは手がかりなしで実装することになる
 #   フラグ    … 未マージの PR が既にあるものは nightly がスキップするので、
-#               ラベルを付けても動かない
+#               ラベルを付けても動かない。weekly-audit が付けた repro / sev:high は
+#               「そのまま流せるか」「先に流すべきか」の判断材料になる
 set -uo pipefail
 
 [ $# -gt 0 ] || { echo "使い方: backlog.sh <owner/repo> [owner/repo ...]" >&2; exit 1; }
@@ -48,9 +49,12 @@ for repo in "$@"; do
       [ "$blen" -lt 120 ] && flags="${flags}本文薄 "
       [ "$age" -gt 30 ] && flags="${flags}古い "
       case ",$labels," in *,automation,*) flags="${flags}選別済 " ;; esac
+      case ",$labels," in *,repro,*) flags="${flags}再現済 " ;; esac
+      case ",$labels," in *,sev:high,*) flags="${flags}重大 " ;; esac
       printf '  #%-4s %3sd  %5s字  %-14s %s\n' \
         "$num" "$age" "$blen" "${flags:-—}" "$title"
     done
 done
 
 printf '\n凡例: PR中=未マージPRあり(nightlyはスキップ) / 本文薄=実装の手がかりが不足 / 古い=30日超 / 選別済=automation付き\n'
+printf '      再現済=監査が失敗テストで再現を確認 (本文のテストがそのまま完了判定になる) / 重大=sev:high\n'

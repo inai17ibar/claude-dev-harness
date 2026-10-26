@@ -383,6 +383,85 @@ if should_run "symlink"; then
   rm -rf "$linkdir"
 fi
 
+# ---- weekly-audit の観点ローテーション -----------------------------------
+group "weekly-audit — 観点を週ごとに回す"
+if should_run "audit"; then
+  # shellcheck source=../lib/audit.sh
+  . "$ROOT/lib/audit.sh"
+  # shellcheck disable=SC2086
+  set -- $AUDIT_DEFAULT_LENSES
+  assert_eq "$2" "$(audit_pick_lens 01 "$@")" "audit: 第1週は2番目の観点"
+  # date +%V は "08" を返す。8進数として読むと算術エラーになる
+  want=$(shift $(( 8 % $# )); printf '%s' "$1")
+  assert_eq "$want" "$(audit_pick_lens 08 "$@" 2>&1)" "audit: 0埋めの週番号 (08) を10進数で扱う"
+
+  seen=""
+  for w in 01 02 03 04 05 06; do
+    seen="$seen $(audit_pick_lens "$w" "$@")"
+  done
+  # 連続する観点数ぶんの週で、全観点を1回ずつ通る
+  assert_eq "$(printf '%s\n' $AUDIT_DEFAULT_LENSES | sort | tr '\n' ' ')" \
+    "$(printf '%s\n' $seen | sort | tr '\n' ' ')" "audit: $# 週で全観点を1回ずつ回る"
+
+  if audit_pick_lens abc "$@" >/dev/null 2>&1; then
+    ng "audit: 数字でない週番号を拒否する"
+  else
+    ok "audit: 数字でない週番号を拒否する"
+  fi
+  if audit_pick_lens 01 >/dev/null 2>&1; then
+    ng "audit: 観点が空なら失敗する"
+  else
+    ok "audit: 観点が空なら失敗する"
+  fi
+  set --
+
+  for lens in $AUDIT_DEFAULT_LENSES; do
+    assert_nonempty "$(audit_lens_brief "$lens")" "audit: 観点 $lens に説明がある"
+  done
+  if audit_lens_brief no-such-lens >/dev/null 2>&1; then
+    ng "audit: 未知の観点は失敗する"
+  else
+    ok "audit: 未知の観点は失敗する"
+  fi
+
+  assert_eq "$(date -u '+%Y-%m-%d')" "$(audit_date_days_ago 0)" "audit: 0日前は今日"
+  if printf '%s' "$(audit_date_days_ago 90)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+    ok "audit: 90日前を YYYY-MM-DD で返す"
+  else
+    ng "audit: 90日前を YYYY-MM-DD で返す ($(audit_date_days_ago 90))"
+  fi
+
+  # 重複チェックは Open だけでなく、直近に閉じた Issue と Open PR も見る
+  stubdir=$(mktemp -d)
+  cat > "$stubdir/gh" <<'STUB'
+#!/bin/bash
+case "$*" in
+  *"issue list"*"--state open"*)   echo "#10 開いている Issue" ;;
+  *"issue list"*"--state closed"*"closed:>="*) echo "#3 [closed] 直した Issue" ;;
+  *"pr list"*)                     echo "PR#20 作業中の PR" ;;
+esac
+STUB
+  chmod +x "$stubdir/gh"
+  known=$(PATH="$stubdir:$PATH" audit_known_titles owner/repo 90)
+  assert_eq "3" "$(printf '%s\n' "$known" | grep -c .)" "audit: 既知タイトルに Open/閉じた Issue/PR の3種が入る"
+  case "$known" in
+    *"[closed] 直した Issue"*) ok "audit: 直近に閉じた Issue も重複チェックに入る" ;;
+    *) ng "audit: 直近に閉じた Issue も重複チェックに入る ($known)" ;;
+  esac
+  rm -rf "$stubdir"
+
+  # 観点名を打ち間違えたら、gh や claude を呼ぶ前に止まる
+  tmph=$(mktemp -d)
+  out=$(CLAUDE_HARNESS_DIR="$tmph" AUDIT_LENS=no-such-lens "$ROOT/nightly/weekly-audit.sh" 2>&1)
+  rc=$?
+  assert_eq "1" "$rc" "audit: 未知の AUDIT_LENS で終了コード 1"
+  case "$out" in
+    *"未知の観点"*) ok "audit: 未知の観点と分かるメッセージを出す" ;;
+    *) ng "audit: 未知の観点と分かるメッセージを出す ($out)" ;;
+  esac
+  rm -rf "$tmph"
+fi
+
 # ---- 構文チェック --------------------------------------------------------
 group "全スクリプトの構文チェック"
 while IFS= read -r f; do
