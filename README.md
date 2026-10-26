@@ -192,6 +192,43 @@ vi ~/.claude-harness/nightly/config.sh   # REPOS を書く
 | `com.harness.nightly` | 2:00 と 8〜22時の偶数時 | `automation` ラベルの Issue を `spawn-agents --pr` で実装 |
 | `com.harness.weekly-audit` | 土 7:00 | コードベースを監査して `idea` ラベルの Issue を起票するだけ (実装はしない) |
 
+#### weekly-audit の観点と再現テスト
+
+監査は週ごとに観点を1つに絞って深く見ます。同じ問いで毎週見ると、同じ種類の Issue
+ばかりが出て、見ていない観点は永久に見ないままになるためです (sTune では34件中
+セキュリティが0件でした)。
+
+| 観点 | 探すもの |
+|---|---|
+| `data-integrity` | データが消える・壊れる・食い違う経路、途中失敗の後始末 |
+| `error-surfacing` | 失敗が成功に見える、エラーが画面に出ない |
+| `security` | 信頼できない入力が権限のある処理に届く経路 |
+| `scale` | データが100倍になったときに破綻する処理 |
+| `promises` | README・UI・API が約束しているのに未実装・未配線の機能 |
+| `tests` | 壊れても気づけない場所 |
+
+監査は clone 本体ではなく使い捨ての worktree で走らせ、起票前に失敗するテストを書いて
+問題が実在するかを確かめます。再現できたものには `repro` を付け、そのテストを本文に
+載せます (そのまま nightly のエージェントの完了判定になります)。テストが通ってしまったものは
+起票しません。ほかに深刻度 (`sev:high` / `sev:mid` / `sev:low`) と観点 (`audit:<観点>`) の
+ラベルが付きます。重複チェックは Open な Issue に加えて、直近90日に閉じた Issue と Open な PR も見ます。
+
+設定は `~/.claude-harness/audit/config.sh` で上書きします。
+
+```bash
+AUDIT_REPOS=("inai17ibar/stune")
+AUDIT_LENSES="security data-integrity error-surfacing"  # 回す観点と順番
+AUDIT_REPRO=true          # false で再現テストを書かず、コードに触れない監査に戻す
+AUDIT_AUTO_PROMOTE=0      # >0 で repro かつ sev:high のものをこの件数まで automation に昇格
+```
+
+`AUDIT_AUTO_PROMOTE` は既定で 0 (人が選ぶ) です。上げても、PR は自動レビューの指摘が
+消えるまで自動マージされないので、最後の判断は人に残ります。
+
+```bash
+AUDIT_LENS=security nightly/weekly-audit.sh   # 観点を指定して手動で1回走らせる
+```
+
 想定している回し方は「`idea` で溜める → 人間が選んで `automation` を付ける → 夜間に実装されて
 PR が立つ → 朝レビューしてマージ」です。
 
@@ -254,7 +291,7 @@ harness-collect-metrics | jq .summary
 | 段階 | 手段 |
 |---|---|
 | 思いつきを記録する | `idea` スキル。1行言うだけで `idea` ラベルの Issue になる |
-| 機械が探す | `weekly-audit`。土 7:00 に監査して `idea` を起票する |
+| 機械が探す | `weekly-audit`。土 7:00 に週替わりの観点で監査し、再現テストつきで `idea` を起票する |
 | **選ぶ** | **`idea-triage` スキル。「選別して」で一覧を出し、番号で選ぶ** |
 | 実装する | nightly / `spawn-agents` |
 
