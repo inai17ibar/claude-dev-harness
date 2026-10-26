@@ -220,13 +220,18 @@ if should_run "review-gate"; then
       "pr edit")  echo "$3 $4 $5" >> "$calls"
                   [ "$4" = "--add-label" ] && [ "${FAIL_ADD:-0}" = 1 ] && return 1
                   return 0 ;;
-      "pr view")  echo "${PR_STATE:-OPEN false}" ;;
+      "pr view")  case "$*" in
+                    *"--json url"*) echo "https://github.com/real-owner/harness-test/pull/9" ;;
+                    *"--json labels"*) echo "${GATE_VISIBLE:-true}" ;;
+                    *) echo "${PR_STATE:-OPEN false}" ;;
+                  esac ;;
+      "pr ready") echo "ready" >> "$calls"; return "${FAIL_READY:-0}" ;;
       "pr merge") echo "disable-auto" >> "$calls" ;;
       *)          return 0 ;;
     esac
   }
   # shellcheck disable=SC2034 # 読み込んだ関数が参照する
-  REVIEW_LABEL=review-findings REVIEW_PENDING_LABEL=review-pending REVIEW_HELD=false REPO_SLUG=o/r
+  REVIEW_LABEL=review-findings REVIEW_PENDING_LABEL=review-pending REVIEW_HELD=false REPO_SLUG=harness-test
   # review_pr の分岐と同じ形で呼ぶ
   gate() {  # gate <findings>
     : > "$calls"
@@ -234,13 +239,13 @@ if should_run "review-gate"; then
     tr '\n' ',' < "$calls"
   }
 
-  assert_eq "9 --remove-label review-pending," "$(gate 0)" "指摘なしは review-pending を外すだけ"
-  assert_eq "9 --add-label review-findings,emit held issue=1 pr=9 url=https://github.com/o/r/pull/9,9 --remove-label review-pending," "$(gate 2)" \
+  assert_eq "9 --remove-label review-pending,ready," "$(gate 0)" "指摘なしは review-pending を外すだけ"
+  assert_eq "9 --add-label review-findings,emit held issue=1 pr=9 url=https://github.com/real-owner/harness-test/pull/9,9 --remove-label review-pending,ready," "$(gate 2)" \
     "指摘ありは review-findings を付けてから review-pending を外し、止めたことを知らせる"
-  assert_eq "9 --add-label review-findings,emit held issue=1 pr=9 url=https://github.com/o/r/pull/9,9 --remove-label review-pending," "$(gate '?')" \
+  assert_eq "9 --add-label review-findings,emit held issue=1 pr=9 url=https://github.com/real-owner/harness-test/pull/9,9 --remove-label review-pending,ready," "$(gate '?')" \
     "件数が読めないときも止める側に倒す"
   got=$(PR_STATE="OPEN true" gate 1)
-  assert_eq "9 --add-label review-findings,disable-auto,emit held issue=1 pr=9 url=https://github.com/o/r/pull/9,9 --remove-label review-pending," "$got" \
+  assert_eq "9 --add-label review-findings,disable-auto,emit held issue=1 pr=9 url=https://github.com/real-owner/harness-test/pull/9,9 --remove-label review-pending,ready," "$got" \
     "既に予約されていたら解除する (古い auto-merge.yml のリポジトリ)"
   got=$(FAIL_ADD=1 gate 1)
   assert_eq "9 --add-label review-findings,emit failed issue=1 pr=9 stage=review_gate," "$got" \
@@ -250,8 +255,73 @@ if should_run "review-gate"; then
     "レビュー前にマージされていたら、止めたとは数えず失敗として数える"
   REVIEW_HELD=false; hold_for_human 1 9 "指摘" >/dev/null
   assert_eq "true" "$REVIEW_HELD" "止めたら --merge でも予約しない印を立てる"
+  got=$(GATE_VISIBLE=false gate 0)
+  assert_eq "9 --remove-label review-pending,emit failed issue=1 pr=9 stage=review_gate," "$got" "ラベルの読み取り遅延では Draft を解除しない"
+  got=$(FAIL_READY=1 gate 0)
+  assert_eq "9 --remove-label review-pending,ready,emit failed issue=1 pr=9 stage=review_gate," "$got" "Ready API 失敗ではマージを止める"
   rm -f "$calls"
   unset -f gh harness_log harness_retry emit gate
+fi
+
+# Draft is the server-side gate, including the create/metadata race.
+if should_run "draft-gate"; then
+  (
+    # shellcheck disable=SC1090
+    . /dev/stdin <<< "$(sed -n '/^create_pr()/,/^}/p; /^release_review()/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
+    calls=$(mktemp)
+    DO_REVIEW=true AUTO_MERGE=true ADMIN_MERGE=true
+    REVIEW_PENDING_LABEL=review-pending REVIEW_LABEL=review-findings
+    harness_log() { :; }
+    harness_retry() { shift 2; "$@"; }
+    emit() { echo "event $*" >> "$calls"; }
+    base_ref() { echo main; }
+    git() {
+      case "$*" in
+        *rev-parse*) echo agent/issue-1-test ;;
+        *rev-list*) echo 1 ;;
+      esac
+    }
+    gh() {
+      echo "gh $*" >> "$calls"
+      case "$1 $2" in
+        "pr create")
+          case " $* " in *" --draft "*) ;; *) return 99 ;; esac
+          [ "${CREATE_FAIL:-0}" = 0 ] || return 1
+          echo https://github.com/owner/repo/pull/9 ;;
+        "pr view") echo "${VISIBLE:-true}" ;;
+        "pr ready") return "${READY_FAIL:-0}" ;;
+        "pr edit") return "${EDIT_FAIL:-0}" ;;
+      esac
+    }
+    review_pr() {
+      echo review >> "$calls"
+      [ "${REVIEW_FAIL:-0}" = 0 ] || return 1
+      release_review "$1" "$3"
+    }
+    for scenario in success create_failure pending_delayed review_failure label_failure release_delayed ready_failure; do
+      : > "$calls"
+      CREATE_FAIL=0 VISIBLE=true REVIEW_FAIL=0 READY_FAIL=0 EDIT_FAIL=0
+      case "$scenario" in
+        create_failure) CREATE_FAIL=1 ;;
+        pending_delayed) VISIBLE=false ;;
+        review_failure) REVIEW_FAIL=1 ;;
+        label_failure) EDIT_FAIL=1 ;;
+        release_delayed) review_pr() { VISIBLE=false; release_review "$1" "$3"; } ;;
+        ready_failure) VISIBLE=true; READY_FAIL=1 ;;
+      esac
+      create_pr 1 /unused title >/dev/null; rc=$?
+      if [ "$scenario" = success ]; then
+        assert_eq 0 "$rc" "Draft creation / review / ready succeeds"
+        assert_eq 1 "$(grep -c '^gh pr ready' "$calls")" "Ready only after review"
+        assert_eq 1 "$(grep -c '^gh pr merge' "$calls")" "clean review permits admin merge"
+      else
+        assert_eq 1 "$rc" "$scenario returns failure"
+        assert_eq 0 "$(grep -c '^gh pr merge' "$calls")" "$scenario never merges, including --admin"
+      fi
+    done
+    rm -f "$calls"
+    [ "$FAIL" = 0 ]
+  ) && ok "Draft gate failure scenarios" || ng "Draft gate failure scenarios"
 fi
 
 # ---- worktree-clean のブランチ抽出 ---------------------------------------
@@ -473,3 +543,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 printf '  ✅ すべて通過\n'
+

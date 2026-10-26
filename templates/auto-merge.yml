@@ -3,7 +3,7 @@
 # Claude Dev Harness を使うリポジトリに置く。次のラベルが付いた PR は
 # 対象から外し、ラベルが外れるまでマージしない。
 #
-#   review-pending   … 自動レビュー中。harness が PR 作成時に付け、レビューが終わったら外す。
+#   review-pending   … 自動レビュー中。harness が Draft PR に付け、レビューが終わったら外す。
 #                      これが無いと、CI が速いリポジトリではレビューより先にマージされる
 #   needs-attention  … 機械が進めない (CI失敗・コンフリクト)。harness が自動で付け外しする
 #   review-findings  … 自動レビューが指摘を出した。外すのは人間の仕事で、
@@ -59,7 +59,7 @@ jobs:
             echo "── PR #$pr ──"
 
             pr_json=$(gh pr view "$pr" -R "$REPO" \
-              --json headRefName,labels,state 2>/dev/null) \
+              --json headRefName,labels,state,isDraft 2>/dev/null) \
               || { echo "  ⚠️  PR 情報を取得できませんでした"; continue; }
 
             state=$(printf '%s' "$pr_json" | jq -r '.state')
@@ -68,6 +68,10 @@ jobs:
 
             if [ "$state" != "OPEN" ]; then
               echo "  ⏭️  OPEN ではありません ($state)"; continue
+            fi
+
+            if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" != "false" ]; then
+              echo "  ⏸️  Draft または状態不明なのでマージしません"; continue
             fi
 
             case "$head_ref" in
@@ -101,3 +105,4 @@ jobs:
               echo "  ⚠️  auto-merge を有効化できませんでした (上のエラーを参照)"
             fi
           done
+
