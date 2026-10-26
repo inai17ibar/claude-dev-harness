@@ -269,7 +269,9 @@ if should_run "draft-gate"; then
     # shellcheck disable=SC1090
     . /dev/stdin <<< "$(sed -n '/^create_pr()/,/^}/p; /^release_review()/,/^}/p' "$ROOT/bin/spawn-agents.sh")"
     calls=$(mktemp)
+    # shellcheck disable=SC2034 # Functions loaded above consume these settings.
     DO_REVIEW=true AUTO_MERGE=true ADMIN_MERGE=true
+    # shellcheck disable=SC2034
     REVIEW_PENDING_LABEL=review-pending REVIEW_LABEL=review-findings
     harness_log() { :; }
     harness_retry() { shift 2; "$@"; }
